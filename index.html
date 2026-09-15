@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ZI Writer v31 MATH MODEL - Preview</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #0f0f0f; color: #e0e0e0; line-height: 1.6; }
+h1 { color: #ff6b35; border-bottom: 2px solid #ff6b35; padding-bottom: 10px; }
+h2 { color: #4ecdc4; margin-top: 30px; }
+.card { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 20px; margin: 15px 0; }
+.badge { display: inline-block; background: #ff6b35; color: white; padding: 4px 12px; border-radius: 20px; font-size: 0.85em; margin-right: 8px; }
+.badge.green { background: #4ecdc4; }
+.badge.blue { background: #45b7d1; }
+.badge.pizza { background: #f5a623; color: #000; }
+.badge.birds { background: #7b68ee; }
+.badge.editor { background: #00c853; }
+.badge.math { background: #ff1744; }
+a { color: #4ecdc4; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.download { display: inline-block; background: #ff6b35; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; margin: 10px 10px 10px 0; }
+.download:hover { background: #e55a2b; text-decoration: none; }
+.download.new { background: #ff1744; color: #fff; }
+code { background: #2a2a2a; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+pre { background: #1a1a1a; padding: 15px; border-radius: 8px; overflow-x: auto; border: 1px solid #333; }
+ul { padding-left: 20px; }
+li { margin: 8px 0; }
+.success { color: #4ecdc4; font-weight: bold; }
+</style>
+</head>
+<body>
+<h1>📐 ZI Writer v31 MATH MODEL 🧠📚</h1>
+<p><span class="badge math">v31 MATH MODEL</span><span class="badge editor">EDITOR</span><span class="badge birds">ПТИЦЫ+ПИЦЦА</span><span class="badge green">GENRE LEARNING</span></p>
+
+<div class="card" style="border: 2px solid #ff1744;">
+<h2>⬇️ Скачать APK — NEW v31</h2>
+<p><span class="success">✅ BUILD SUCCESSFUL in 22s</span> - 12.09.2026 22:08 — 5.8 MB</p>
+<a class="download new" href="ZI-Writer-v31-MATH-MODEL.apk">📥 v31 MATH MODEL (5.8 MB) — NEW</a>
+<a class="download" href="ZI-Writer-v30-EDITOR.apk" style="background:#00c853;">v30 EDITOR (5.7 MB)</a>
+<a class="download" href="ZI-Writer-v29-BIRDS-PIZZA.apk" style="background:#333;">v29 (5.7 MB)</a>
+<p><strong>Новое в v31:</strong> Математическая модель встроена в движок + авто-изучение по жанрам с Флибусты + выбор сюжета по смыслу вступления</p>
+</div>
+
+<div class="card" style="border: 2px solid #00c853;">
+<h2>📐 Математическая модель + Пример 5 листов</h2>
+<p><span class="badge math">МОДЕЛЬ</span><span class="badge birds">АНАЛИЗ КНИГИ</span><span class="badge pizza">5 ЛИСТОВ</span></p>
+<ul>
+<li><a href="math_model_dialogues.md" style="font-weight:bold; font-size:1.1em;">📄 math_model_dialogues.md — Математическая модель (формулы, графы, диалоги)</a></li>
+<li><a href="example_book_rewrite_5_pages.md" style="font-weight:bold; font-size:1.1em;">📖 example_book_rewrite_5_pages.md — Анализ «Маленького принца» + 5 листов «Лия и ворон с крыши» (Полоцк 2026)</a></li>
+</ul>
+</div>
+
+<div class="card" style="border: 2px solid #ff1744;">
+<h2>🧠 Новое в v31 — Мат.модель в движке</h2>
+<p>По запросу: «Добавь эту модель в движок. При выборе жанра необходимо изучить по модели книги с Флибуста соответствующего жанра и сгенерировать согласно вступлению наиболее подходящий по смыслу сюжет и развить его»</p>
+
+<h3>1. Новый файл MathPlotModel.kt (15 KB)</h3>
+<pre>object MathPlotModel {
+  data class Plot(id, keywords, genre, title, chars)
+  data class PlotStage(stage, keywords, description)
+  data class ScoredPlot(plot, score, matchedKeywords)
+
+  // Жанр → запросы Флибусты
+  GenreFlibustaMapper.getQueriesForGenre(genre):
+    Детектив → [детектив, Sherlock Holmes, Акунин]
+    Фантастика → [фантастика, Стругацкий, Лукьяненко]
+    Роман → [любовный роман, любовь, Ремарк]
+    ...
+
+  // Семантика
+  extractKeywords(text) → TF
+  calculateSimilarity(Q,K):
+    Jaccard = |Q∩K|/|Q∪K|
+    score = Jaccard*2 + |Q∩K|*0.3 + genreMatch*0.5 + important*0.2
+
+  selectBestPlot(intro, genre, plots):
+    qKeywords = extract(intro)
+    scored = plots.map { Sim(qKeywords, plot.keywords) }
+    return max(scored) if score > 0.2
+
+  buildPlotGraph(bestPlot, introKeywords, genre):
+    combined = intro.take(4) + bestPlot.keywords.take(4) + genreKeywords.take(2)
+    return 5 stages: завязка, развитие1, развитие2, кульминация, развязка
+    Детектив: Звонок про kw1 → Улика kw2 → Подозреваемый kw3 → Правда kw4 → Справедливость
+    Роман: Встреча kw1 → Чувство kw2 → Разлука kw3 → Выбор kw4 → Любовь
+
+  Coherence = 0.5*Lexical + 0.35*Entity + 0.15*Temporal
+}
+</pre>
+
+<h3>2. LearningManager.kt — жанровое обучение</h3>
+<ul>
+<li><code>getGenrePlotsFile(genre)</code> — plots_Детектив.json, plots_Фантастика.json и т.д.</li>
+<li><code>getPlotsDetailedFile()</code> — learned_plots_detailed.json с объектами {title, genre, keywords, chars, date}</li>
+<li><code>saveDetailedPlot(book)</code> — сохраняет детальный сюжет с жанром при каждом обучении</li>
+<li><code>getDetailedPlots()</code> / <code>getDetailedPlotsByGenre(genre)</code> — возвращает List&lt;Plot&gt; для мат.модели</li>
+<li><code>getLearnedBooksByGenre(genre)</code> — фильтр по жанру из books_index.json</li>
+<li><code>autoLearnByGenre(genre, maxBooks)</code> — берет queries из GenreFlibustaMapper, ищет через OpdsFetcher.searchFlibusta(query, PRIMARY_OPDS=http://flibusta.net/opds), скачивает, обучает</li>
+<li><code>getGenreStats()</code> — Map жанр→кол-во книг</li>
+<li>При <code>learnFromText()</code> теперь сохраняет и в genre-specific файл, и в detailed</li>
+</ul>
+
+<h3>3. StoryGenerator.kt — интеграция модели</h3>
+<pre>data class GenerationConfig(
+  ...
+  learnedPlots: List&lt;String&gt;,
+  detailedPlots: List&lt;Plot&gt;,
+  useMathModel: Boolean = true
+)
+
+fun generate(config):
+  introKeywords = MathPlotModel.extractKeywords(original, 12)
+  bestPlot = selectBestPlot(original, genre, detailedPlots, 0.2)
+  plotGraph = buildPlotGraph(bestPlot, introKeywords, genre, original)
+  enrichedKeywords = keywords + bestPlot.keywords + matchedKeywords
+
+  // Лог в текст:
+  [Мат.модель: выбран сюжет "Мастер и Маргарита" жанр Роман score=1.80 совпадения: любовь, тайна]
+
+  outline = if (plotGraph.isNotEmpty()) 
+              plotGraph.map { stage: keywords — description } // завязка→развязка
+            else createOutline(...)
+
+  // Генерация параграфов использует enrichedKeywords (вступление + лучший сюжет)
+  para = generateNarrativeParagraph(genre, ..., enrichedKeywords, ...)
+</pre>
+
+<h3>4. MainActivity.kt — UI жанрового обучения</h3>
+<ul>
+<li><code>onGenreSelectedForLearning(genre)</code> — вызывается при выборе в spGenre / actvGenre</li>
+<li>Проверяет <code>getLearnedBooksByGenre(genre).size</code></li>
+<li>Если &lt;3 книг → показывает Snackbar «Жанр X: изучено N книг. Запускаю дообучение с Флибусты...»</li>
+<li>Запускает <code>autoLearnByGenre(genre, 2)</code> фоном с прогрессом в tvInternetStatus</li>
+<li>В <code>generateStory()</code>:
+  <ul>
+    <li>Загружает <code>learnedPlotsByGenre</code> и <code>detailedPlotsByGenre</code></li>
+    <li>Если detailedPlots.size &lt;3 → фоном доучивает еще 2 книги этого жанра</li>
+    <li>Передает в StoryGenerator с useMathModel=true</li>
+  </ul>
+</li>
+<li><code>showLearningStats()</code> теперь показывает:
+  <ul>
+    <li>Детальных сюжетов (с жанром)</li>
+    <li>Разбивку по жанрам: Детектив: 5 книг, Фантастика: 3 и т.д.</li>
+    <li>Описание мат.модели: B,H,P,F,K, Coherence, P(t|Q)</li>
+  </ul>
+</li>
+<li>tvReadingStats показывает «📐 мат.модель: N сюжетов жанра X • 🧠 N гер, N мест»</li>
+</ul>
+
+<h3>5. OpdsFetcher.kt</h3>
+<ul>
+<li>Добавлен <code>SECONDARY_OPDS = http://flibusta.is/opds</code> как fallback</li>
+<li>PRIMARY_OPDS = http://flibusta.net/opds (работает в РБ)</li>
+</ul>
+</div>
+
+<div class="card">
+<h2>🚀 Как работает теперь (пошагово)</h2>
+<ol>
+<li>Пользователь выбирает жанр «Детектив» в спиннере</li>
+<li><code>onGenreSelectedForLearning("Детектив")</code> → проверяет сколько детективов изучено</li>
+<li>Если &lt;3 → <code>GenreFlibustaMapper.getQueriesForGenre("Детектив") = [детектив, Sherlock Holmes, Акунин, Донцова, Чейз]</code></li>
+<li>Для каждого query: <code>OpdsFetcher.searchFlibusta(query, http://flibusta.net/opds)</code> → список книг</li>
+<li>Берет первую с downloadLinks, <code>fetchBookText()</code> → текст FB2/EPUB/TXT</li>
+<li><code>LearningManager.learnFromText()</code> → извлекает H,P,F,K, сохраняет в learned_heroes.json, learned_places.json, learned_phrases.json, learned_plots.json + plots_Детектив.json + learned_plots_detailed.json (с жанром)</li>
+<li>Пользователь вводит вступление: «Ночью в Полоцке пропала девушка, оставив коробку пиццы и перо ворона...»</li>
+<li>Нажимает «Генерировать» → <code>generateStory()</code> загружает detailedPlotsByGenre("Детектив") = 5 сюжетов</li>
+<li><code>MathPlotModel.extractKeywords(вступление) = [ночью, Полоцке, пропала, девушка, коробка, пиццы, перо, ворона]</code></li>
+<li><code>selectBestPlot()</code> считает Sim для каждого сюжета: Jaccard + совпадения → выбирает лучший, например «Десять негритят» (ключевые: пропала, тайна, расследование, улика) score=1.2</li>
+<li><code>buildPlotGraph()</code> → 5 стадий: завязка (пропала, преступление) → развитие1 (улика, коробка пиццы) → развитие2 (подозреваемый, перо ворона) → кульминация (правда) → развязка (справедливость)</li>
+<li>Генерирует текст по этим стадиям, используя enrichedKeywords = вступление + лучший сюжет + жанровые слова, с Coherence проверкой и диалогами-цепью Маркова</li>
+<li>В начале текста лог: [Мат.модель: выбран сюжет "Десять негритят" жанр Детектив score=1.20 совпадения: пропала, тайна]</li>
+</ol>
+</div>
+
+<div class="card">
+<h2>✏️ Редактор (v30) + Птицы/Пицца (v29)</h2>
+<ul>
+<li>Полноэкранный редактор: кнопка «✏️ Редактор (правка)» → MATCH_PARENT диалог с заголовком, всем текстом, статистикой, A-/A+, Сохранить/Копировать</li>
+<li>«⬆️ В исходник» — копирует результат в поле ввода для продолжения</li>
+<li>Птицы: ворон, ворона, птица, стая птиц, кормушка — в местах и сюжетах</li>
+<li>Пицца: пиццерия, коробка пиццы, пепперони — в местах и сюжетах</li>
+<li>Кофе делает птица, а не она — 8 вариантов</li>
+</ul>
+</div>
+
+<div class="card">
+<h2>📊 Сборка v31</h2>
+<ul>
+<li>Новый файл MathPlotModel.kt — 15 KB, 300 строк, жанровая модель</li>
+<li>LearningManager: +6 новых функций, genre-specific файлы</li>
+<li>StoryGenerator: +3 поля в config, enrichedKeywords, plotGraph</li>
+<li>MainActivity: авто-обучение по жанру при выборе</li>
+<li>BUILD SUCCESSFUL in 22s, 35 tasks, APK 5.8 MB</li>
+</ul>
+</div>
+
+<footer style="margin-top:40px; padding-top:20px; border-top:1px solid #333; text-align:center; color:#666;">
+<p>ZI Writer v31 MATH MODEL • 12.09.2026 22:08 • мат.модель B,H,P,F,K + Coherence + genre learning flibusta.net/opds • 5.8 MB</p>
+</footer>
+</body>
+</html>

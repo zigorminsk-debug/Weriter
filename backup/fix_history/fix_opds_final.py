@@ -1,0 +1,296 @@
+import pathlib
+p = pathlib.Path('/home/user/zi-writer/app/src/main/java/com/zakharevich/ziwriter/OpdsFetcher.kt')
+# Use raw string and manually handle
+content = r'''
+package com.zakharevich.ziwriter
+
+import android.util.Xml
+import org.xmlpull.v1.XmlPullParser
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
+
+object OpdsFetcher {
+    data class OpdsBook(
+        val id: String,
+        val title: String,
+        val authors: String,
+        val description: String,
+        val downloadLinks: Map<String, String>,
+        val coverUrl: String? = null,
+        val source: String = "Flibusta OPDS"
+    )
+    const val PRIMARY_OPDS = "http://flibusta.net/opds"
+    private val MIRRORS = listOf(
+        "http://flibusta.net/opds",
+        "https://flibusta.net/opds",
+        "http://flibusta.is/opds",
+        "https://flibusta.is/opds",
+        "http://flibusta.site/opds",
+        "https://flibusta.site/opds",
+        "http://213.5.65.159/opds",
+        "https://flibusta.appspot.com/opds"
+    )
+    fun searchFlibusta(query: String, baseUrl: String = PRIMARY_OPDS, page: Int = 0): List<OpdsBook> {
+        if (query.isBlank()) return emptyList()
+        val encoded = try { URLEncoder.encode(query, "UTF-8") } catch (e: Exception) { query }
+        val urlsToTry = mutableListOf<String>()
+        urlsToTry.add("$baseUrl/search?searchTerm=$encoded&searchType=books&pageNumber=$page")
+        urlsToTry.add("$baseUrl/search?searchTerm=$encoded&searchType=books")
+        urlsToTry.add("$baseUrl/search?searchTerm=$encoded")
+        for (mirror in MIRRORS) {
+            if (mirror == baseUrl) continue
+            urlsToTry.add("$mirror/search?searchTerm=$encoded&searchType=books&pageNumber=$page")
+            urlsToTry.add("$mirror/search?searchTerm=$encoded&searchType=books")
+        }
+        for (url in urlsToTry) {
+            try {
+                val xml = httpGet(url, timeout = 15000) ?: continue
+                if (xml.length < 80) continue
+                if (xml.contains("<html") && xml.contains("<title>")) {
+                    if (!xml.contains("<entry") && !xml.contains("<feed")) continue
+                }
+                val books = parseOpdsFeed(xml, baseUrl)
+                if (books.isNotEmpty()) return books
+            } catch (e: Exception) { continue }
+        }
+        return emptyList()
+    }
+    fun parseOpdsFeed(xmlContent: String, baseUrl: String): List<OpdsBook> {
+        val books = mutableListOf<OpdsBook>()
+        try {
+            val parser = Xml.newPullParser()
+            parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
+            parser.setInput(xmlContent.reader())
+            var eventType = parser.eventType
+            var currentTitle = ""
+            var currentId = ""
+            var currentAuthor = ""
+            var currentDescription = ""
+            var currentLinks = mutableMapOf<String, String>()
+            var currentCover: String? = null
+            var inEntry = false
+            var inAuthor = false
+            var currentTextTag = ""
+            while (eventType != XmlPullParser.END_DOCUMENT) {
+                when (eventType) {
+                    XmlPullParser.START_TAG -> {
+                        val name = parser.name.lowercase()
+                        currentTextTag = name
+                        if (name == "entry") {
+                            inEntry = true
+                            currentTitle = ""
+                            currentId = ""
+                            currentAuthor = ""
+                            currentDescription = ""
+                            currentLinks = mutableMapOf()
+                            currentCover = null
+                        } else if (inEntry) {
+                            if (name == "author") inAuthor = true
+                            else if (name == "link") {
+                                val rel = parser.getAttributeValue(null, "rel") ?: ""
+                                val type = parser.getAttributeValue(null, "type") ?: ""
+                                val href = parser.getAttributeValue(null, "href") ?: ""
+                                if (href.isNotEmpty()) {
+                                    val fullHref = resolveUrl(baseUrl, href)
+                                    when {
+                                        rel.contains("acquisition") || rel.contains("open-access") -> {
+                                            val key = when {
+                                                type.contains("fb2") -> "fb2"
+                                                type.contains("epub") -> "epub"
+                                                type.contains("text/plain") || type.contains("txt") -> "txt"
+                                                else -> type.ifEmpty { "fb2" }
+                                            }
+                                            if (!currentLinks.containsKey(key)) currentLinks[key] = fullHref
+                                            if (!currentLinks.containsKey("acquisition")) currentLinks["acquisition"] = fullHref
+                                        }
+                                        rel.contains("image") || type.startsWith("image/") -> {
+                                            if (currentCover == null) currentCover = fullHref
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    XmlPullParser.TEXT -> {
+                        if (inEntry) {
+                            val text = parser.text ?: ""
+                            when (currentTextTag) {
+                                "title" -> { if (!inAuthor) currentTitle += text else currentAuthor += text }
+                                "id" -> currentId += text
+                                "content", "summary" -> currentDescription += text
+                                "name" -> if (inAuthor) currentAuthor += text
+                            }
+                        }
+                    }
+                    XmlPullParser.END_TAG -> {
+                        val name = parser.name.lowercase()
+                        if (name == "entry" && inEntry) {
+                            inEntry = false
+                            if (currentTitle.isNotBlank() && currentLinks.isNotEmpty()) {
+                                val idClean = currentId.ifBlank { currentTitle }
+                                if (!currentTitle.lowercase().contains("поиск по") && currentTitle.length > 2) {
+                                    books.add(OpdsBook(idClean, currentTitle.trim(), currentAuthor.trim().ifEmpty { "Неизвестен" }, currentDescription.trim(), currentLinks.toMap(), currentCover))
+                                }
+                            }
+                        } else if (name == "author") inAuthor = false
+                        currentTextTag = ""
+                    }
+                }
+                eventType = parser.next()
+            }
+        } catch (e: Exception) {}
+        return books
+    }
+    fun resolveUrl(baseUrl: String, href: String): String {
+        return try {
+            if (href.startsWith("http://") || href.startsWith("https://")) href
+            else {
+                val domain = baseUrl.substringBefore("/opds")
+                if (href.startsWith("/")) domain + href else "$domain/$href"
+            }
+        } catch (e: Exception) { href }
+    }
+    fun fetchBookText(opdsBook: OpdsBook, preferredFormat: String = "fb2"): String? {
+        val order = listOf(preferredFormat, "txt", "fb2", "epub", "acquisition")
+        for (fmt in order) {
+            val url = opdsBook.downloadLinks[fmt] ?: continue
+            try {
+                val bytes = httpGetBytes(url, timeout = 25000) ?: continue
+                if (bytes.isEmpty()) continue
+                val text = when {
+                    fmt == "fb2" || url.contains("fb2") -> tryParseFb2Bytes(bytes)
+                    fmt == "epub" || url.contains("epub") -> tryParseEpubBytes(bytes)
+                    else -> try { String(bytes, Charsets.UTF_8).takeIf { it.length > 100 } ?: String(bytes, charset("windows-1251")) } catch (e: Exception) { null }
+                }
+                if (text != null && text.length > 200) return text.take(300000)
+            } catch (e: Exception) { continue }
+        }
+        return null
+    }
+    private fun tryParseFb2Bytes(bytes: ByteArray): String? {
+        return try {
+            if (bytes.size > 2 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte()) {
+                val zis = java.util.zip.ZipInputStream(bytes.inputStream())
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    if (!entry.isDirectory && entry.name.contains("fb2")) {
+                        val fb2Text = zis.readBytes().toString(Charsets.UTF_8)
+                        val parsed = parseFb2XmlToText(fb2Text)
+                        if (parsed.length > 200) { zis.close(); return parsed }
+                    }
+                    zis.closeEntry()
+                    entry = zis.nextEntry
+                }
+                zis.close()
+                null
+            } else {
+                parseFb2XmlToText(String(bytes, Charsets.UTF_8))
+            }
+        } catch (e: Exception) {
+            try { parseFb2XmlToText(String(bytes, charset("windows-1251"))) } catch (e2: Exception) { null }
+        }
+    }
+    private fun parseFb2XmlToText(fb2Xml: String): String {
+        return try {
+            val parser = Xml.newPullParser()
+            parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
+            parser.setInput(fb2Xml.reader())
+            val sb = StringBuilder()
+            var eventType = parser.eventType
+            var inP = false
+            while (eventType != XmlPullParser.END_DOCUMENT) {
+                when (eventType) {
+                    XmlPullParser.START_TAG -> {
+                        val name = parser.name.lowercase()
+                        if (name == "p" || name == "v" || name == "subtitle") inP = true
+                    }
+                    XmlPullParser.TEXT -> {
+                        if (inP) {
+                            val t = parser.text?.trim() ?: ""
+                            if (t.length > 2) { sb.append(t).append("\n\n"); if (sb.length > 250000) break }
+                        }
+                    }
+                    XmlPullParser.END_TAG -> {
+                        val name = parser.name.lowercase()
+                        if (name == "p" || name == "v") inP = false
+                    }
+                }
+                eventType = parser.next()
+            }
+            sb.toString().ifBlank { fb2Xml.replace(Regex("<[^>]+>"), " ").replace(Regex("\\s+"), " ").trim().take(200000) }
+        } catch (e: Exception) {
+            fb2Xml.replace(Regex("<[^>]+>"), " ").replace(Regex("\\s+"), " ").trim().take(200000)
+        }
+    }
+    private fun tryParseEpubBytes(bytes: ByteArray): String? {
+        return try {
+            val zis = java.util.zip.ZipInputStream(bytes.inputStream())
+            var entry = zis.nextEntry
+            val sb = StringBuilder()
+            while (entry != null) {
+                if (!entry.isDirectory && (entry.name.endsWith(".html") || entry.name.endsWith(".xhtml"))) {
+                    val html = zis.readBytes().toString(Charsets.UTF_8)
+                    val text = html.replace(Regex("<[^>]+>"), " ").replace(Regex("\\s+"), " ").trim()
+                    if (text.length > 100) { sb.append(text).append("\n\n"); if (sb.length > 200000) break }
+                }
+                zis.closeEntry()
+                entry = zis.nextEntry
+            }
+            zis.close()
+            if (sb.length > 200) sb.toString() else null
+        } catch (e: Exception) { null }
+    }
+    fun httpGet(urlStr: String, timeout: Int = 12000): String? {
+        var conn: HttpURLConnection? = null
+        return try {
+            val url = URL(urlStr)
+            conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.connectTimeout = timeout
+            conn.readTimeout = timeout
+            conn.instanceFollowRedirects = true
+            conn.setRequestProperty("User-Agent", "ZI-Writer/21.0 FLIBUSTA")
+            conn.setRequestProperty("Accept", "application/atom+xml, */*")
+            val code = conn.responseCode
+            if (code != 200 && code >= 400) return null
+            val reader = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8))
+            val sb = StringBuilder()
+            var line: String?
+            while (reader.readLine().also { line = it } != null) { sb.append(line).append("\n"); if (sb.length > 800000) break }
+            sb.toString()
+        } catch (e: Exception) { null } finally { conn?.disconnect() }
+    }
+    fun httpGetBytes(urlStr: String, timeout: Int = 20000): ByteArray? {
+        var conn: HttpURLConnection? = null
+        return try {
+            val url = URL(urlStr)
+            conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.connectTimeout = timeout
+            conn.readTimeout = timeout
+            conn.instanceFollowRedirects = true
+            conn.setRequestProperty("User-Agent", "ZI-Writer/21.0 FLIBUSTA")
+            val code = conn.responseCode
+            if (code != 200) return null
+            conn.inputStream.readBytes()
+        } catch (e: Exception) { null } finally { conn?.disconnect() }
+    }
+    fun toBookInfo(opdsBook: OpdsBook): InternetBookFetcher.BookInfo {
+        val bestUrl = opdsBook.downloadLinks["fb2"] ?: opdsBook.downloadLinks["txt"] ?: opdsBook.downloadLinks["epub"] ?: opdsBook.downloadLinks["acquisition"]
+        return InternetBookFetcher.BookInfo(opdsBook.id, opdsBook.title, opdsBook.authors, if (opdsBook.description.isNotBlank()) listOf(opdsBook.description.take(100)) else emptyList(), bestUrl, opdsBook.source, listOf("ru"))
+    }
+}
+'''
+# The raw string has \n as two chars \ and n, but we need actual Kotlin \n as \ + n, which is what raw gives? In raw string, \n is backslash + n, which is correct for Kotlin file wanting \n? Actually Kotlin file wants \n as backslash + n, which is what raw string gives. So we need to replace \\n that are meant to be newline escapes with \n? In raw, \n is literally backslash + n, which is correct for Kotlin "\n". So we keep as is.
+# But we have \s+ which in raw is backslash + s, but Kotlin needs \\s+ (double backslash + s). So we need to replace \s with \\s in file.
+# In raw string, \s is backslash + s, we need \\s (two backslashes + s) in file. So replace \s with \\s, but careful.
+# Actually in Kotlin, Regex("\\s+") needs two backslashes in file. So in file we need \\s. In raw string, to get \\s in file, we need to write \\s as two backslashes + s, which in raw is \\s (since raw preserves backslashes, \\ is two backslashes). So raw string with \\s already gives two backslashes + s in file? Let's check: raw string r'\s' is backslash + s (one). r'\\s' is two backslashes + s. So we need \\s in file (two backslashes), so we need raw with \\s.
+# Our raw content currently has \s+ (one backslash + s) in places like Regex("\s+")? Actually we wrote Regex("\\s+") inside raw string? In raw, "\\s+" is backslash, backslash, s, plus? Let's see: raw string r'"\\s+"' contains: quote, backslash, backslash, s, plus, quote. That's two backslashes + s in file, which is what Kotlin needs. So our raw content already has \\s+ as two backslashes? We wrote Regex("\\s+") inside raw, which is two backslashes? In raw, "\\s+" is two backslashes + s + plus? Actually raw r'"\\s+"' is: " \ \ s + " -> two backslashes. So file will have two backslashes, correct.
+# For \n\n, we wrote "\n\n" inside raw: raw r'"\n\n"' is quote, backslash, n, backslash, n, quote -> one backslash + n twice, which is correct for Kotlin newline.
+# So raw content should be correct as is, no extra processing.
+
+p.write_text(content.strip() + "\n", encoding='utf-8')
+print("opds final written")

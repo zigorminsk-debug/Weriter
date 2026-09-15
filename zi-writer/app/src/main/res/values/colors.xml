@@ -1,0 +1,28 @@
+<resources>
+    <!-- v6 MEGA Pleasant Palette -->
+    <color name="primary_light">#2D1B69</color>
+    <color name="primary_dark">#1A1040</color>
+    <color name="primary_light_variant">#5B4CAD</color>
+    <color name="primary_container">#E8E0FF</color>
+    <color name="accent_light">#FF6B35</color>
+    <color name="accent_container">#FFDBCC</color>
+    <color name="background_light">#FEFBFF</color>
+    <color name="surface_light">#FFFBFE</color>
+    <color name="surface_variant_light">#F2F0F7</color>
+    <color name="surface_container">#F3EDF7</color>
+    <color name="text_primary_light">#1A1C1E</color>
+    <color name="text_secondary_light">#5A5D60</color>
+    <color name="outline_light">#C2C6CC</color>
+    <color name="outline_variant">#E2E0E6</color>
+    <color name="primary">#2D1B69</color>
+    <color name="accent">#FF6B35</color>
+    <color name="background">#FEFBFF</color>
+    <color name="surface">#FFFBFE</color>
+    <color name="text_primary">#1A1C1E</color>
+    <color name="text_secondary">#5A5D60</color>
+    <color name="seed">#2D1B69</color>
+    <color name="success">#2E7D32</color>
+    <color name="warning">#F57F17</color>
+    <color name="error">#BA1A1A</color>
+    <color name="card_stroke">#E8E0FF</color>
+</resources>
