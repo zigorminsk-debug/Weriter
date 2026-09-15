@@ -1,0 +1,166 @@
+name: Android Release APK
+
+# Запускается:
+#  1) автоматически — когда на GitHub опубликован релиз (Releases -> Publish release)
+#  2) автоматически — при пуше тега вида v32, v32.1 (релиз будет создан workflow'ом)
+#  3) вручную — Actions -> Android Release APK -> Run workflow
+on:
+  release:
+    types: [published]
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: "Версия (например 32.0). Пусто = из последнего тега"
+        required: false
+        default: ""
+
+permissions:
+  contents: write   # нужно, чтобы прикрепить APK к релизу
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build & sign APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: zi-writer
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools platforms;android-34 build-tools;34.0.0"
+
+      - name: Set up Gradle (with cache)
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Gradle memory settings for CI
+        shell: bash
+        run: |
+          mkdir -p ~/.gradle
+          cat >> ~/.gradle/gradle.properties <<'PROPS'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1g
+          kotlin.daemon.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+          org.gradle.workers.max=2
+          org.gradle.daemon=false
+          PROPS
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      # -------------------------------------------------------------------
+      # Вычисляем версию из тега: v32 -> 32.0 / code 3200 ; v32.1 -> 32.1 / code 3201
+      # -------------------------------------------------------------------
+      - name: Resolve version from tag
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.version_name || '' }}" ]; then
+            RAW="${{ github.event.inputs.version_name }}"
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            RAW="${{ github.event.release.tag_name }}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            RAW="${GITHUB_REF_NAME}"
+          else
+            RAW="$(git describe --tags --abbrev=0 2>/dev/null || echo v0.0)"
+          fi
+          # убираем префикс v/V и всё, что после первого пробела/дефиса
+          CLEAN="$(echo "$RAW" | sed -E 's/^[vV]//; s/[-_ ].*$//')"
+          MAJOR="$(echo "$CLEAN" | cut -d. -f1)"
+          MINOR="$(echo "$CLEAN" | cut -d. -f2 -s)"
+          MAJOR="${MAJOR:-0}"; MINOR="${MINOR:-0}"
+          # только цифры
+          MAJOR="$(echo "$MAJOR" | tr -cd '0-9')"; MINOR="$(echo "$MINOR" | tr -cd '0-9')"
+          MAJOR="${MAJOR:-0}"; MINOR="${MINOR:-0}"
+          VERSION_NAME="${MAJOR}.${MINOR}"
+          # versionCode = MAJOR*100 + MINOR: v32 -> 3200, v32.1 -> 3201, v33 -> 3300.
+          # Монотонно растёт для любых тегов и всегда больше старых кодов (<=31).
+          VERSION_CODE="$(( MAJOR * 100 + MINOR ))"
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "Tag: $RAW -> versionName=$VERSION_NAME versionCode=$VERSION_CODE"
+
+      # -------------------------------------------------------------------
+      # Keystore из секретов. Если секреты не заданы — используется
+      # keystore из репозитория (zi-writer/zi-writer-release.jks).
+      # -------------------------------------------------------------------
+      - name: Decode keystore from secrets
+        id: ks
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "file=$RUNNER_TEMP/release.jks" >> "$GITHUB_OUTPUT"
+            echo "Using keystore from secrets"
+          else
+            echo "file=" >> "$GITHUB_OUTPUT"
+            echo "::warning::Секрет KEYSTORE_BASE64 не задан — используется keystore из репозитория"
+          fi
+
+      - name: Build release APK
+        env:
+          VERSION_NAME: ${{ steps.ver.outputs.version_name }}
+          VERSION_CODE: ${{ steps.ver.outputs.version_code }}
+          KEYSTORE_FILE: ${{ steps.ks.outputs.file }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Collect artifacts
+        id: apk
+        shell: bash
+        run: |
+          APK="$(ls app/build/outputs/apk/release/*.apk | head -n1)"
+          echo "path=zi-writer/$APK" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$APK")" >> "$GITHUB_OUTPUT"
+          sha256sum "$APK" | tee "$APK.sha256"
+          ls -la app/build/outputs/apk/release/
+
+      - name: Upload APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: |
+            ${{ steps.apk.outputs.path }}
+            ${{ steps.apk.outputs.path }}.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+      # Прикрепляем APK к релизу на GitHub.
+      # Для события `release` — к уже существующему релизу,
+      # для пуша тега — релиз создаётся автоматически.
+      - name: Attach APK to GitHub Release
+        if: github.event_name == 'release' || github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || github.ref_name }}
+          files: |
+            ${{ steps.apk.outputs.path }}
+            ${{ steps.apk.outputs.path }}.sha256
+          fail_on_unmatched_files: true
+          generate_release_notes: ${{ github.event_name != 'release' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -147,17 +147,35 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         try { setupDropdowns() } catch (e: Exception) {}
         try { setupListeners() } catch (e: Exception) {}
         try { updateEstimate() } catch (e: Exception) {}
+        // Защита от «вечного краша» на старте из-за битой обученной базы.
+        // Маркер ставится перед загрузкой данных и снимается ТОЛЬКО после того,
+        // как фоновая загрузка реально завершилась (см. updateLearnedCount).
+        // Раньше маркер удалялся сразу после запуска корутины — т.е. защита
+        // не работала, а при любом падении внутри корутины база стиралась
+        // при следующем запуске.
         try {
-            val crashMarker = java.io.File(filesDir, "crash_marker")
+            val crashMarker = File(filesDir, CRASH_MARKER)
             if (crashMarker.exists()) {
-                try { LearningManager.clearLearned(this); crashMarker.delete() } catch (e: Exception) {}
+                val attempts = (crashMarker.readText().trim().toIntOrNull() ?: 0) + 1
+                if (attempts >= 2) {
+                    // Два подряд неудачных старта — только тогда чистим базу.
+                    try { LearningManager.clearLearned(this) } catch (e: Exception) {}
+                    crashMarker.delete()
+                    Toast.makeText(this, "Обученная база была повреждена и очищена", Toast.LENGTH_LONG).show()
+                } else {
+                    crashMarker.writeText(attempts.toString())
+                }
+            } else {
+                try { crashMarker.writeText("0") } catch (e: Exception) {}
             }
-            try { crashMarker.createNewFile() } catch (e: Exception) {}
-            updateLearnedCount()
-            try { crashMarker.delete() } catch (e: Exception) {}
+            updateLearnedCount(onDone = { try { File(filesDir, CRASH_MARKER).delete() } catch (e: Exception) {} })
         } catch (e: Exception) {
-            try { LearningManager.clearLearned(this) } catch (ex: Exception) {}
+            try { File(filesDir, CRASH_MARKER).delete() } catch (ex: Exception) {}
         }
+    }
+
+    companion object {
+        private const val CRASH_MARKER = "crash_marker"
     }
 
     override fun onInit(status: Int) {
@@ -168,12 +186,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 tts?.setLanguage(Locale.getDefault())
             }
             tts?.setSpeechRate(ttsSpeed)
+            // Возвращаем кнопке текст «Озвучить», когда озвучка закончилась сама
+            tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {}
+                override fun onDone(utteranceId: String?) { runOnUiThread { try { binding.btnTts.text = "Озвучить" } catch (e: Exception) {} } }
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) { runOnUiThread { try { binding.btnTts.text = "Озвучить" } catch (e: Exception) {} } }
+            })
         }
     }
 
     override fun onDestroy() {
-        tts?.stop()
-        tts?.shutdown()
+        try { tts?.stop(); tts?.shutdown() } catch (e: Exception) {}
+        tts = null
+        ttsReady = false
         super.onDestroy()
     }
 
@@ -357,7 +383,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         binding.tvReadingTime.text = "~$minutes мин чтения"
     }
 
-    private fun updateLearnedCount() {
+    private fun updateLearnedCount(onDone: (() -> Unit)? = null) {
         try {
             if (isFinishing || isDestroyed) return
             lifecycleScope.launch(Dispatchers.IO) {
@@ -390,10 +416,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     } catch (e: Exception) {
                         try { binding.chipLearnedCount.text = "0 фраз • 0 книг • OPDS flibusta.net" } catch (ex: Exception) {}
                     }
+                    onDone?.invoke()
                 }
             }
         } catch (e: Exception) {
             try { binding.chipLearnedCount.text = "0 фраз • 0 книг • OPDS flibusta.net" } catch (ex: Exception) {}
+            onDone?.invoke()
         }
     }
 
@@ -488,7 +516,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             binding.btnGenerate.isEnabled = true
             binding.btnContinue.isEnabled = true
             generatedStory = if (isContinue && generatedStory != null) {
-                val combined = generatedStory!!.fullText + "\n\n" + story.fullText.substringAfter("— — — Страница 1 — — —", "").let { if (it.isEmpty()) story.fullText else it }.take(pages * 1800)
+                val prev = generatedStory!!.fullText
+                val addition = story.fullText.substringAfter("— — — Страница 1 — — —", "").ifEmpty { story.fullText }.take(pages * 1800)
+                val combined = prev + "\n\n" + addition
                 story.copy(fullText = combined, chars = combined.length, pages = (combined.length + 1799) / 1800)
             } else story
             binding.tvResultTitle.text = generatedStory!!.title
@@ -834,14 +864,35 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         val story = generatedStory ?: return
         if (!ttsReady) { Toast.makeText(this, "TTS не готов", Toast.LENGTH_SHORT).show(); return }
         if (tts?.isSpeaking == true) { tts?.stop(); binding.btnTts.text = "Озвучить" } else {
-            tts?.speak(story.fullText.take(4000), TextToSpeech.QUEUE_FLUSH, null, "ziwriter")
+            // TTS ограничен ~4000 символов на один вызов speak() — режем текст
+            // на куски по границам предложений и ставим их в очередь.
+            val maxLen = (TextToSpeech.getMaxSpeechInputLength() - 100).coerceIn(500, 3900)
+            val chunks = splitForTts(story.fullText, maxLen)
+            chunks.forEachIndexed { i, chunk ->
+                val mode = if (i == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+                tts?.speak(chunk, mode, null, "ziwriter_$i")
+            }
             binding.btnTts.text = "⏹ Стоп"
         }
     }
+    private fun splitForTts(text: String, maxLen: Int): List<String> {
+        val result = mutableListOf<String>()
+        val sb = StringBuilder()
+        for (sentence in text.split(Regex("(?<=[.!?…])\\s+"))) {
+            if (sentence.isBlank()) continue
+            if (sb.length + sentence.length + 1 > maxLen && sb.isNotEmpty()) { result.add(sb.toString()); sb.clear() }
+            if (sentence.length > maxLen) { sentence.chunked(maxLen).forEach { result.add(it) }; continue }
+            sb.append(sentence).append(' ')
+        }
+        if (sb.isNotBlank()) result.add(sb.toString())
+        return result
+    }
     private fun shareStory() {
         val story = generatedStory ?: return
-        val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_SUBJECT, story.title); putExtra(Intent.EXTRA_TEXT, story.fullText) }
-        startActivity(Intent.createChooser(intent, "Поделиться"))
+        // Intent с текстом > ~500 КБ падает с TransactionTooLargeException
+        val text = if (story.fullText.length > 200_000) story.fullText.take(200_000) + "\n\n[…текст обрезан, используйте экспорт в файл]" else story.fullText
+        val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_SUBJECT, story.title); putExtra(Intent.EXTRA_TEXT, text) }
+        try { startActivity(Intent.createChooser(intent, "Поделиться")) } catch (e: Exception) { Toast.makeText(this, "Нет приложения для отправки", Toast.LENGTH_SHORT).show() }
     }
     private fun copyToClipboard(text: String) {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager

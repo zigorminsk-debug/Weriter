@@ -522,7 +522,7 @@ object LearningManager {
                         if (text.length < 500) continue
                         val learned = learnFromOpdsBook(context, book, text)
                         if (learned != null) learnedCount++
-                        Thread.sleep(1500)
+                        try { Thread.sleep(1500) } catch (ie: InterruptedException) { Thread.currentThread().interrupt(); return learnedCount }
                         continue
                     }
                     val book = opdsBooks.firstOrNull { it.downloadLinks.isNotEmpty() } ?: continue
@@ -532,7 +532,7 @@ object LearningManager {
                     progressCallback?.invoke("Обучение: ${book.title.take(20)}")
                     val learned = learnFromOpdsBook(context, book, text)
                     if (learned != null) learnedCount++
-                    Thread.sleep(1500)
+                    try { Thread.sleep(1500) } catch (ie: InterruptedException) { Thread.currentThread().interrupt(); return learnedCount }
                 } catch (e: Exception) { continue }
             }
         } catch (e: Exception) {}
@@ -755,7 +755,7 @@ object LearningManager {
                     progressCallback?.invoke("Обучение: ${book.title.take(20)}")
                     val learned = learnFromOpdsBook(context, book, text)
                     if (learned != null) learnedCount++
-                    Thread.sleep(1500)
+                    try { Thread.sleep(1500) } catch (ie: InterruptedException) { Thread.currentThread().interrupt(); return learnedCount }
                 } catch (e: Exception) { continue }
             }
         } catch (e: Exception) {}
@@ -790,6 +790,10 @@ object LearningManager {
                 while (entry != null) {
                     if (!entry.isDirectory) {
                         val outFile = File(dir, entry.name)
+                        // Zip Slip: запрет записи за пределы каталога learned/ (entry "../../x")
+                        if (!outFile.canonicalPath.startsWith(dir.canonicalPath + File.separator)) {
+                            zis.closeEntry(); entry = zis.nextEntry; continue
+                        }
                         outFile.parentFile?.mkdirs()
                         java.io.FileOutputStream(outFile).use { fos ->
                             zis.copyTo(fos)

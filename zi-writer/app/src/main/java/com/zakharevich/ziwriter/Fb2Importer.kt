@@ -18,6 +18,12 @@ object Fb2Importer {
         return try {
             val factory = DocumentBuilderFactory.newInstance()
             factory.isNamespaceAware = false
+            // Защита от XXE: FB2 из интернета может содержать внешние сущности
+            try { factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) } catch (e: Exception) {}
+            try { factory.setFeature("http://xml.org/sax/features/external-general-entities", false) } catch (e: Exception) {}
+            try { factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false) } catch (e: Exception) {}
+            try { factory.isXIncludeAware = false } catch (e: Exception) {}
+            try { factory.isExpandEntityReferences = false } catch (e: Exception) {}
             val builder = factory.newDocumentBuilder()
             val doc = builder.parse(input)
             doc.documentElement.normalize()

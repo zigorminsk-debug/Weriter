@@ -234,15 +234,15 @@ object InternetBookFetcher {
                 // Try to read error stream for debugging
                 return null
             }
-            val reader = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8))
-            val sb = StringBuilder()
-            var line: String?
-            while (reader.readLine().also { line = it } != null) {
-                sb.append(line).append("\n")
-                if (sb.length > 500000) break // safety limit
+            BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { reader ->
+                val sb = StringBuilder()
+                var line: String?
+                while (reader.readLine().also { line = it } != null) {
+                    sb.append(line).append("\n")
+                    if (sb.length > 500000) break // safety limit
+                }
+                sb.toString()
             }
-            reader.close()
-            sb.toString()
         } catch (e: Exception) {
             e.printStackTrace()
             null

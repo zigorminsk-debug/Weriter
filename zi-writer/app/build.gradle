@@ -3,6 +3,33 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// ---------------------------------------------------------------------------
+// Версия приложения.
+// В CI (GitHub Actions) версия берётся из тега релиза: v32 / v32.1 / 32.0 ...
+//   VERSION_NAME = "32.1"  -> versionName
+//   VERSION_CODE = 32      -> versionCode (целое число, растёт с каждым релизом)
+// Локально используются значения по умолчанию ниже.
+// ---------------------------------------------------------------------------
+def envVersionName = System.getenv("VERSION_NAME")
+def envVersionCode = System.getenv("VERSION_CODE")
+def appVersionName = (envVersionName != null && !envVersionName.isEmpty()) ? envVersionName : "31.0"
+def appVersionCode = (envVersionCode != null && envVersionCode.isInteger()) ? envVersionCode.toInteger() : 31
+
+// ---------------------------------------------------------------------------
+// Подпись release-сборки.
+// Приоритет: переменные окружения (CI) -> локальный keystore ../zi-writer-release.jks
+// В CI keystore передаётся через секрет KEYSTORE_BASE64 и распаковывается
+// workflow'ом в файл, путь к которому лежит в KEYSTORE_FILE.
+// ---------------------------------------------------------------------------
+def ksFile = System.getenv("KEYSTORE_FILE")
+def ksPassword = System.getenv("KEYSTORE_PASSWORD")
+def ksAlias = System.getenv("KEY_ALIAS")
+def ksKeyPassword = System.getenv("KEY_PASSWORD")
+
+def localKeystore = rootProject.file("zi-writer-release.jks")
+def hasEnvSigning = ksFile != null && !ksFile.isEmpty() && file(ksFile).exists()
+def hasLocalSigning = localKeystore.exists()
+
 android {
     namespace 'com.zakharevich.ziwriter'
     compileSdk 34
@@ -11,18 +38,26 @@ android {
         applicationId "com.zakharevich.ziwriter"
         minSdk 24
         targetSdk 34
-        versionCode 25
-        versionName "25.0 SAFE MODE"
+        versionCode appVersionCode
+        versionName appVersionName
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
         release {
-            storeFile file('../zi-writer-release.jks')
-            storePassword 'Zakharevich2024'
-            keyAlias 'ziwriter'
-            keyPassword 'Zakharevich2024'
+            if (hasEnvSigning) {
+                storeFile file(ksFile)
+                storePassword ksPassword
+                keyAlias ksAlias
+                keyPassword ksKeyPassword
+            } else if (hasLocalSigning) {
+                // Локальная сборка. Пароли тоже можно переопределить через env.
+                storeFile localKeystore
+                storePassword ksPassword ?: 'Zakharevich2024'
+                keyAlias ksAlias ?: 'ziwriter'
+                keyPassword ksKeyPassword ?: 'Zakharevich2024'
+            }
         }
     }
 
@@ -30,10 +65,16 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            signingConfig signingConfigs.release
+            if (hasEnvSigning || hasLocalSigning) {
+                signingConfig signingConfigs.release
+            }
         }
         debug {
-            signingConfig signingConfigs.release
+            // Debug подписываем тем же ключом, чтобы можно было обновлять
+            // release-версию поверх debug без удаления приложения.
+            if (hasEnvSigning || hasLocalSigning) {
+                signingConfig signingConfigs.release
+            }
         }
     }
     compileOptions {
@@ -50,6 +91,12 @@ android {
         checkReleaseBuilds false
         abortOnError false
     }
+    // Имя выходного файла: ZI-Writer-v32.1-release.apk
+    applicationVariants.all { variant ->
+        variant.outputs.all { output ->
+            outputFileName = "ZI-Writer-v${variant.versionName}-${variant.buildType.name}.apk"
+        }
+    }
 }
 
 dependencies {
@@ -58,4 +105,7 @@ dependencies {
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
+    // Coroutines используются напрямую (Dispatchers, withContext, delay) —
+    // раньше подтягивались транзитивно через lifecycle, лучше указать явно.
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
 }

@@ -170,18 +170,18 @@ object OpdsFetcher {
     private fun tryParseFb2Bytes(bytes: ByteArray): String? {
         return try {
             if (bytes.size > 2 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte()) {
-                val zis = java.util.zip.ZipInputStream(bytes.inputStream())
-                var entry = zis.nextEntry
-                while (entry != null) {
-                    if (!entry.isDirectory && entry.name.contains("fb2")) {
-                        val fb2Text = zis.readBytes().toString(Charsets.UTF_8)
-                        val parsed = parseFb2XmlToText(fb2Text)
-                        if (parsed.length > 200) { zis.close(); return parsed }
+                java.util.zip.ZipInputStream(bytes.inputStream()).use { zis ->
+                    var entry = zis.nextEntry
+                    while (entry != null) {
+                        if (!entry.isDirectory && entry.name.contains("fb2")) {
+                            val fb2Text = zis.readBytes().toString(Charsets.UTF_8)
+                            val parsed = parseFb2XmlToText(fb2Text)
+                            if (parsed.length > 200) return parsed
+                        }
+                        zis.closeEntry()
+                        entry = zis.nextEntry
                     }
-                    zis.closeEntry()
-                    entry = zis.nextEntry
                 }
-                zis.close()
                 null
             } else {
                 parseFb2XmlToText(String(bytes, Charsets.UTF_8))
@@ -224,19 +224,19 @@ object OpdsFetcher {
     }
     private fun tryParseEpubBytes(bytes: ByteArray): String? {
         return try {
-            val zis = java.util.zip.ZipInputStream(bytes.inputStream())
-            var entry = zis.nextEntry
             val sb = StringBuilder()
-            while (entry != null) {
-                if (!entry.isDirectory && (entry.name.endsWith(".html") || entry.name.endsWith(".xhtml"))) {
-                    val html = zis.readBytes().toString(Charsets.UTF_8)
-                    val text = html.replace(Regex("<[^>]+>"), " ").replace(Regex("\\s+"), " ").trim()
-                    if (text.length > 100) { sb.append(text).append("\n\n"); if (sb.length > 200000) break }
+            java.util.zip.ZipInputStream(bytes.inputStream()).use { zis ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    if (!entry.isDirectory && (entry.name.endsWith(".html") || entry.name.endsWith(".xhtml"))) {
+                        val html = zis.readBytes().toString(Charsets.UTF_8)
+                        val text = html.replace(Regex("<[^>]+>"), " ").replace(Regex("\\s+"), " ").trim()
+                        if (text.length > 100) { sb.append(text).append("\n\n"); if (sb.length > 200000) break }
+                    }
+                    zis.closeEntry()
+                    entry = zis.nextEntry
                 }
-                zis.closeEntry()
-                entry = zis.nextEntry
             }
-            zis.close()
             if (sb.length > 200) sb.toString() else null
         } catch (e: Exception) { null }
     }
@@ -253,11 +253,12 @@ object OpdsFetcher {
             conn.setRequestProperty("Accept", "application/atom+xml, */*")
             val code = conn.responseCode
             if (code != 200 && code >= 400) return null
-            val reader = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8))
-            val sb = StringBuilder()
-            var line: String?
-            while (reader.readLine().also { line = it } != null) { sb.append(line).append("\n"); if (sb.length > 800000) break }
-            sb.toString()
+            BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { reader ->
+                val sb = StringBuilder()
+                var line: String?
+                while (reader.readLine().also { line = it } != null) { sb.append(line).append("\n"); if (sb.length > 800000) break }
+                sb.toString()
+            }
         } catch (e: Exception) { null } finally { conn?.disconnect() }
     }
     fun httpGetBytes(urlStr: String, timeout: Int = 20000): ByteArray? {
@@ -272,7 +273,7 @@ object OpdsFetcher {
             conn.setRequestProperty("User-Agent", "ZI-Writer/21.0 FLIBUSTA")
             val code = conn.responseCode
             if (code != 200) return null
-            conn.inputStream.readBytes()
+            conn.inputStream.use { it.readBytes() }
         } catch (e: Exception) { null } finally { conn?.disconnect() }
     }
     fun toBookInfo(opdsBook: OpdsBook): InternetBookFetcher.BookInfo {

@@ -106,15 +106,31 @@ object PdfExporter {
             pdfDocument.close()
 
             // Also try to save to Downloads
+            // На Android 10+ (API 29) прямая запись в общую папку Downloads без
+            // MediaStore запрещена (scoped storage) — copyTo падал в catch, а на
+            // API 24-28 требовал runtime-разрешения WRITE_EXTERNAL_STORAGE,
+            // которого приложение не запрашивает. Используем MediaStore на 29+.
             try {
-                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                if (downloadsDir.exists() || downloadsDir.mkdirs()) {
-                    val downloadFile = File(downloadsDir, fileName)
-                    file.copyTo(downloadFile, overwrite = true)
-                    return downloadFile
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    val values = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                        put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "application/pdf")
+                        put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                    }
+                    val uri = context.contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    if (uri != null) {
+                        context.contentResolver.openOutputStream(uri)?.use { out -> file.inputStream().use { it.copyTo(out) } }
+                    }
+                } else {
+                    val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                    if (downloadsDir.exists() || downloadsDir.mkdirs()) {
+                        val downloadFile = File(downloadsDir, fileName)
+                        file.copyTo(downloadFile, overwrite = true)
+                        return downloadFile
+                    }
                 }
             } catch (e: Exception) {
-                // ignore
+                // ignore — файл в любом случае сохранён в getExternalFilesDir
             }
 
             file

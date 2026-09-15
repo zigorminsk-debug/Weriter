@@ -1,0 +1,19 @@
+# Android / Gradle
+zi-writer/local.properties
+zi-writer/.gradle/
+zi-writer/build/
+zi-writer/app/build/
+zi-writer/.idea/
+zi-writer/*.iml
+zi-writer/app/*.iml
+zi-writer/captures/
+zi-writer/.kotlin/
+
+# Android SDK cache (was committed by mistake)
+.android/
+.wget-hsts
+
+# OS / editors
+.DS_Store
+*.swp
+*~
