@@ -39,12 +39,15 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var lastSearchResults: List<InternetBookFetcher.BookInfo> = emptyList()
     private var lastOpdsResults: List<OpdsFetcher.OpdsBook> = emptyList()
 
+    private val storagePermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> }
+
     private val filePickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == RESULT_OK) {
             result.data?.data?.let { uri ->
                 try {
                     contentResolver.openInputStream(uri)?.use { input ->
-                        val text = input.bufferedReader().readText().take(30000)
+                        // Читаем не больше 30000 знаков: крупный файл целиком в память не тянем (иначе OOM)
+                        val text = input.bufferedReader().use { readLimited(it, 30000) }
                         binding.etInput.setText(text)
                         Toast.makeText(this, "Загружено ${text.length} знаков", Toast.LENGTH_SHORT).show()
                     }
@@ -137,9 +140,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         } catch (e: Exception) {
             try {
                 val tv = android.widget.TextView(this)
-                tv.text = "Ошибка UI, очищаю кэш..."
+                tv.text = "Не удалось загрузить интерфейс. Данные обучения сохранены — перезапустите приложение."
                 setContentView(tv)
-                LearningManager.clearLearned(this)
             } catch (ex: Exception) {}
             return
         }
@@ -147,17 +149,31 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         try { setupDropdowns() } catch (e: Exception) {}
         try { setupListeners() } catch (e: Exception) {}
         try { updateEstimate() } catch (e: Exception) {}
+        // Раньше здесь стоял «crash_marker»: если файл-маркер оставался от прошлого запуска
+        // (т.е. после ЛЮБОГО падения приложения), база обучения полностью удалялась.
+        // Это приводило к потере всех изученных книг — теперь данные никогда не стираются
+        // автоматически, только по явной команде пользователя (кнопка «Очистить»).
+        try { updateLearnedCount() } catch (e: Exception) {}
+
+        // На Android 9 и ниже для сохранения файлов в «Загрузки» нужно разрешение
+        // (на Android 10+ используется MediaStore, разрешение не требуется).
         try {
-            val crashMarker = java.io.File(filesDir, "crash_marker")
-            if (crashMarker.exists()) {
-                try { LearningManager.clearLearned(this); crashMarker.delete() } catch (e: Exception) {}
+            if (android.os.Build.VERSION.SDK_INT <= android.os.Build.VERSION_CODES.P &&
+                checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                storagePermissionLauncher.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
             }
-            try { crashMarker.createNewFile() } catch (e: Exception) {}
-            updateLearnedCount()
-            try { crashMarker.delete() } catch (e: Exception) {}
-        } catch (e: Exception) {
-            try { LearningManager.clearLearned(this) } catch (ex: Exception) {}
+        } catch (e: Exception) {}
+    }
+
+    private fun readLimited(reader: java.io.Reader, limit: Int): String {
+        val buffer = CharArray(limit)
+        var total = 0
+        while (total < limit) {
+            val read = reader.read(buffer, total, limit - total)
+            if (read <= 0) break
+            total += read
         }
+        return String(buffer, 0, total)
     }
 
     override fun onInit(status: Int) {
@@ -770,10 +786,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         val story = generatedStory ?: return
         try {
             val fileName = "ZIWriter_${story.title.replace(Regex("[^a-zA-Zа-яА-Я0-9]"), "_").take(15)}_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())}.txt"
-            val file = File(getExternalFilesDir(null), fileName)
+            val file = File(getExternalFilesDir(null) ?: filesDir, fileName)
             FileOutputStream(file).use { it.write(story.fullText.toByteArray()) }
-            val dl = File("/storage/emulated/0/Download", fileName)
-            try { file.copyTo(dl, true); Toast.makeText(this, "TXT: Download/$fileName", Toast.LENGTH_LONG).show() } catch (e: Exception) { Toast.makeText(this, "Сохранено: ${file.absolutePath}", Toast.LENGTH_LONG).show() }
+            val saved = DownloadSaver.save(this, file, "text/plain")
+            if (saved != null) Toast.makeText(this, "TXT: Download/${saved.name}", Toast.LENGTH_LONG).show()
+            else Toast.makeText(this, "Сохранено: ${file.absolutePath}", Toast.LENGTH_LONG).show()
         } catch (e: Exception) { Toast.makeText(this, "Ошибка: ${e.message}", Toast.LENGTH_LONG).show() }
     }
 

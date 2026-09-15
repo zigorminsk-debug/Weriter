@@ -95,15 +95,12 @@ $paragraphsXml
                 zip.closeEntry()
             }
 
-            // Copy to Downloads
-            try {
-                val downloadsDir = File("/storage/emulated/0/Download")
-                if (downloadsDir.exists() || downloadsDir.mkdirs()) {
-                    val dlFile = File(downloadsDir, file.name)
-                    file.copyTo(dlFile, true)
-                    return dlFile
-                }
-            } catch (e: Exception) {}
+            // Copy to Downloads (MediaStore на Android 10+, прямая запись на более старых)
+            DownloadSaver.save(
+                context,
+                file,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )?.let { return it }
 
             file
         } catch (e: Exception) {

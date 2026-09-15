@@ -195,14 +195,8 @@ object CoverGenerator {
             val file = File(dir, fileName)
             FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
 
-            try {
-                val dlDir = File("/storage/emulated/0/Download")
-                if (dlDir.exists() || dlDir.mkdirs()) {
-                    val dlFile = File(dlDir, fileName)
-                    file.copyTo(dlFile, true)
-                    return dlFile
-                }
-            } catch (e: Exception) {}
+            // Копируем в «Загрузки» (MediaStore на Android 10+, прямая запись на более старых)
+            DownloadSaver.save(context, file, "image/png")?.let { return it }
 
             file
         } catch (e: Exception) {

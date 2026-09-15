@@ -18,6 +18,13 @@ object Fb2Importer {
         return try {
             val factory = DocumentBuilderFactory.newInstance()
             factory.isNamespaceAware = false
+            // Безопасный разбор недоверенного XML (FB2 приходит из интернета или из файла
+            // пользователя): запрещаем загрузку внешних DTD и сущностей, чтобы исключить XXE.
+            try { factory.setFeature("http://xml.org/sax/features/external-general-entities", false) } catch (e: Exception) {}
+            try { factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false) } catch (e: Exception) {}
+            try { factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false) } catch (e: Exception) {}
+            try { factory.setXIncludeAware(false) } catch (e: Exception) {}
+            try { factory.isExpandEntityReferences = false } catch (e: Exception) {}
             val builder = factory.newDocumentBuilder()
             val doc = builder.parse(input)
             doc.documentElement.normalize()

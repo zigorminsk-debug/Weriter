@@ -1,0 +1,71 @@
+name: Android CI
+
+# Сборка debug-APK на каждый push/PR — проверяем, что проект вообще компилируется.
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'backup/**'
+      - '*.apk'
+  pull_request:
+  workflow_dispatch:
+
+# Не запускать параллельные сборки одной и той же ветки.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Сборка debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: true
+
+      - name: Установка platform/build-tools
+        run: |
+          sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+
+      - name: Подготовка окружения сборки
+        working-directory: zi-writer
+        run: |
+          # local.properties в репозитории содержит путь с локальной машины разработчика —
+          # в CI он ломает сборку, поэтому перезаписываем его на реальный SDK раннера.
+          echo "sdk.dir=${ANDROID_SDK_ROOT}" > local.properties
+          cat local.properties
+          # Более щедрая память для сборки в CI (в репозитории значения под слабую локальную машину).
+          sed -i 's/^org.gradle.jvmargs=.*/org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=512m/' gradle.properties
+          sed -i 's/^kotlin.daemon.jvmargs=.*/kotlin.daemon.jvmargs=-Xmx1g -Dfile.encoding=UTF-8/' gradle.properties
+          chmod +x gradlew
+
+      - name: Сборка debug APK
+        working-directory: zi-writer
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Артефакт (debug APK)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZI-Writer-debug-${{ github.run_number }}
+          path: zi-writer/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
