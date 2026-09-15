@@ -72,20 +72,31 @@ jobs:
           fetch-depth: 0
 
       - name: JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
           cache: gradle
 
-      - name: Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          log-accepted-android-sdk-licenses: true
-
-      - name: Установка platform/build-tools
+      - name: Проверка Android SDK на раннере
         run: |
-          sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK" ]; then
+            echo "::error::Android SDK не найден ($SDK)"
+            exit 1
+          fi
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK"      >> "$GITHUB_ENV"
+          echo "SDK=$SDK"
+          ls "$SDK/platforms" 2>/dev/null || true
+
+      - name: Установка platform/build-tools 34
+        run: |
+          SDK="$ANDROID_SDK_ROOT"
+          SDKMANAGER="$(command -v sdkmanager || echo "$SDK/cmdline-tools/latest/bin/sdkmanager")"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" --install "platforms;android-34" "build-tools;34.0.0" "platform-tools" \
+            || echo "::warning::Не удалось доустановить пакеты SDK — пробуем то, что уже есть в образе"
 
       - name: Ключ подписи
         id: keystore
@@ -119,9 +130,19 @@ jobs:
           ZIWRITER_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           ZIWRITER_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          set +e
+          set -o pipefail
           ./gradlew --no-daemon --stacktrace assembleRelease \
             -PziwriterVersionName="${{ steps.meta.outputs.version_name }}" \
-            -PziwriterVersionCode="${{ steps.meta.outputs.version_code }}"
+            -PziwriterVersionCode="${{ steps.meta.outputs.version_code }}" 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            summary=$(grep -E "^(e: |FAILURE:|Caused by:|\* What went wrong:|\* Try:)" -A 2 build.log \
+                      | head -c 3000 | tr '\n' '~' || true)
+            echo "::error title=Ошибка сборки release APK::$summary"
+            exit "$status"
+          fi
 
       - name: Проверка и переименование APK
         working-directory: zi-writer
