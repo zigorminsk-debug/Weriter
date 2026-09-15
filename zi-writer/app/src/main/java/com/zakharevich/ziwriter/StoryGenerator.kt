@@ -21,7 +21,9 @@ object StoryGenerator {
         val learnedPhrases: List<String> = emptyList(),
         val learnedPlots: List<String> = emptyList(),
         val detailedPlots: List<MathPlotModel.Plot> = emptyList(),
-        val useMathModel: Boolean = true
+        val useMathModel: Boolean = true,
+        /** Показывать служебную строку о выбранном сюжете прямо в тексте (по умолчанию выключено). */
+        val debugInfo: Boolean = false
     )
 
     data class GeneratedStory(
@@ -138,10 +140,11 @@ object StoryGenerator {
             (keywords + bestPlot.plot.keywords + bestPlot.matchedKeywords).distinct().take(20)
         } else keywords
 
-        // Логирование для дебага (в заголовок)
-        if (bestPlot != null) {
-            sb.append("[Мат.модель: выбран сюжет \"${bestPlot.plot.title.take(30)}\" жанр ${bestPlot.plot.genre} score=${String.format("%.2f", bestPlot.score)} совпадения: ${bestPlot.matchedKeywords.joinToString(", ")}]\n\n")
-        } else if (config.useMathModel && config.detailedPlots.isNotEmpty()) {
+        // Диагностика мат.модели. Включается только config.debugInfo: раньше эта строка
+        // всегда попадала в начало готового текста и уходила в экспорт (TXT/PDF/DOCX/EPUB).
+        if (config.debugInfo && bestPlot != null) {
+            sb.append("[Мат.модель: выбран сюжет \"${bestPlot.plot.title.take(30)}\" жанр ${bestPlot.plot.genre} score=${String.format(java.util.Locale.US, "%.2f", bestPlot.score)} совпадения: ${bestPlot.matchedKeywords.joinToString(", ")}]\n\n")
+        } else if (config.debugInfo && config.useMathModel && config.detailedPlots.isNotEmpty()) {
             sb.append("[Мат.модель: изучено ${config.detailedPlots.size} сюжетов жанра ${config.genre}, подходящий не найден — генерирую по вступлению]\n\n")
         }
 

@@ -1,0 +1,97 @@
+name: Android CI
+
+# Сборка debug-APK на каждый push/PR — проверяем, что проект вообще компилируется.
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'backup/**'
+      - '*.apk'
+  pull_request:
+  workflow_dispatch:
+
+# Не запускать параллельные сборки одной и той же ветки.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Сборка debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Проверка Android SDK на раннере
+        run: |
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK" ]; then
+            echo "::error::Android SDK не найден ($SDK)"
+            exit 1
+          fi
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK"      >> "$GITHUB_ENV"
+          echo "SDK=$SDK"
+          ls "$SDK"
+          ls "$SDK/platforms" 2>/dev/null || true
+
+      - name: Установка platform/build-tools 34
+        run: |
+          SDK="$ANDROID_SDK_ROOT"
+          SDKMANAGER="$(command -v sdkmanager || echo "$SDK/cmdline-tools/latest/bin/sdkmanager")"
+          echo "sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          # Если нужные пакеты уже есть в образе раннера — установка просто ничего не делает.
+          "$SDKMANAGER" --install "platforms;android-34" "build-tools;34.0.0" "platform-tools" \
+            || echo "::warning::Не удалось доустановить пакеты SDK — пробуем то, что уже есть в образе"
+
+      - name: Подготовка окружения сборки
+        working-directory: zi-writer
+        run: |
+          # local.properties в репозитории содержит путь с локальной машины разработчика —
+          # в CI он ломает сборку, поэтому перезаписываем его на реальный SDK раннера.
+          echo "sdk.dir=${ANDROID_SDK_ROOT}" > local.properties
+          cat local.properties
+          # Более щедрая память для сборки в CI (в репозитории значения под слабую локальную машину).
+          sed -i 's/^org.gradle.jvmargs=.*/org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=512m/' gradle.properties
+          sed -i 's/^kotlin.daemon.jvmargs=.*/kotlin.daemon.jvmargs=-Xmx1g -Dfile.encoding=UTF-8/' gradle.properties
+          chmod +x gradlew
+
+      - name: Сборка debug APK
+        working-directory: zi-writer
+        run: |
+          set +e
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            # Логи в этом окружении бывает не прочитать — вытаскиваем суть ошибки в аннотацию.
+            summary=$(grep -E "^(e: |FAILURE:|Caused by:|\* What went wrong:|\* Try:)" -A 2 build.log \
+                      | head -c 3000 | tr '\n' '~' || true)
+            echo "::error title=Ошибка сборки::$summary"
+            exit "$status"
+          fi
+
+      - name: Артефакт (debug APK)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZI-Writer-debug-${{ github.run_number }}
+          path: zi-writer/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14

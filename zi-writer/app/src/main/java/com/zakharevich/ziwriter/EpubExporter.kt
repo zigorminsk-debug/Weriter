@@ -15,8 +15,7 @@ object EpubExporter {
             val safeTitle = title.replace(Regex("[^a-zA-Zа-яА-Я0-9 ]"), "").take(20).ifEmpty { "Book" }
             val fileName = "ZIWriter_${safeTitle}_${sdf.format(Date())}.epub"
 
-            val internalFile = File(context.getExternalFilesDir(null), fileName)
-            val downloadFile = File("/storage/emulated/0/Download", fileName)
+            val internalFile = File(context.getExternalFilesDir(null) ?: context.filesDir, fileName)
 
             // Create EPUB structure
             ZipOutputStream(internalFile.outputStream()).use { zip ->
@@ -154,13 +153,8 @@ p { text-indent: 1.5em; margin: 0.5em 0; text-align: justify; }
                 zip.closeEntry()
             }
 
-            // Try copy to Download
-            try {
-                internalFile.copyTo(downloadFile, true)
-                downloadFile
-            } catch (e: Exception) {
-                internalFile
-            }
+            // Try copy to Download (MediaStore на Android 10+, прямая запись на более старых)
+            DownloadSaver.save(context, internalFile, "application/epub+zip") ?: internalFile
         } catch (e: Exception) {
             e.printStackTrace()
             null

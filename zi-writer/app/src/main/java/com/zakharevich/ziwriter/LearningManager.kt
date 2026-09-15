@@ -785,11 +785,20 @@ object LearningManager {
         return try {
             val dir = getLearnedDir(context)
             dir.mkdirs()
+            val basePath = dir.canonicalPath + File.separator
             java.util.zip.ZipInputStream(java.io.FileInputStream(zipFile)).use { zis ->
                 var entry = zis.nextEntry
                 while (entry != null) {
                     if (!entry.isDirectory) {
                         val outFile = File(dir, entry.name)
+                        // Защита от Zip Slip: имя записи в архиве может содержать "../",
+                        // и тогда файл записался бы вне папки обучения.
+                        val outPath = try { outFile.canonicalPath } catch (e: Exception) { entry.name }
+                        if (!outPath.startsWith(basePath)) {
+                            zis.closeEntry()
+                            entry = zis.nextEntry
+                            continue
+                        }
                         outFile.parentFile?.mkdirs()
                         java.io.FileOutputStream(outFile).use { fos ->
                             zis.copyTo(fos)

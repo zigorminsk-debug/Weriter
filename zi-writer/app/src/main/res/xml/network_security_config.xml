@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  По умолчанию HTTPS-only. Открытый HTTP разрешён только для зеркал Флибусты,
+  которые в приложении используются как источник OPDS-каталога и загрузки книг
+  (OpdsFetcher.MIRRORS). Если добавите новое HTTP-зеркало — внесите его сюда.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">flibusta.net</domain>
+        <domain includeSubdomains="true">flibusta.is</domain>
+        <domain includeSubdomains="true">flibusta.site</domain>
+        <domain includeSubdomains="true">213.5.65.159</domain>
+        <!-- Каталоги книг: часть старых ссылок на тексты отдаётся по http -->
+        <domain includeSubdomains="true">gutenberg.org</domain>
+        <domain includeSubdomains="true">archive.org</domain>
+    </domain-config>
+</network-security-config>

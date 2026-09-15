@@ -3,6 +3,39 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// ---------------------------------------------------------------------------
+// Версия приложения.
+// В CI приходит из тега релиза:
+//   ./gradlew assembleRelease -PziwriterVersionName=31.0 -PziwriterVersionCode=310000
+// Локально, если ничего не задано, используются значения по умолчанию.
+// Правило versionCode: major*10000 + minor*100 + patch (должен только расти!).
+// ---------------------------------------------------------------------------
+def ziVersionName = (project.findProperty('ziwriterVersionName') ?: System.getenv('ZIWRITER_VERSION_NAME') ?: '32.0').toString()
+def ziVersionCode = (project.findProperty('ziwriterVersionCode') ?: System.getenv('ZIWRITER_VERSION_CODE') ?: '3200').toString().toInteger()
+
+// ---------------------------------------------------------------------------
+// Подпись релиза.
+// Приоритет источников: переменные окружения (GitHub Actions secrets) ->
+// keystore.properties (локально, файл в .gitignore) -> ключ из репозитория
+// (обратная совместимость, чтобы сборка не ломалась без настроенных секретов).
+// ---------------------------------------------------------------------------
+def ziKeystoreProps = new Properties()
+def ziKeystorePropsFile = rootProject.file('keystore.properties')
+if (ziKeystorePropsFile.exists()) {
+    ziKeystorePropsFile.withInputStream { ziKeystoreProps.load(it) }
+}
+
+def ziStoreFileName = System.getenv('ZIWRITER_STORE_FILE') ?: ziKeystoreProps.getProperty('storeFile') ?: 'zi-writer-release.jks'
+def ziStorePassword = System.getenv('ZIWRITER_STORE_PASSWORD') ?: ziKeystoreProps.getProperty('storePassword') ?: 'Zakharevich2024'
+def ziKeyAlias = System.getenv('ZIWRITER_KEY_ALIAS') ?: ziKeystoreProps.getProperty('keyAlias') ?: 'ziwriter'
+def ziKeyPassword = System.getenv('ZIWRITER_KEY_PASSWORD') ?: ziKeystoreProps.getProperty('keyPassword') ?: ziStorePassword
+def ziKeystoreFile = new File(ziStoreFileName).isAbsolute() ? new File(ziStoreFileName) : rootProject.file(ziStoreFileName)
+def ziHasKeystore = ziKeystoreFile.exists()
+
+if (!ziHasKeystore) {
+    logger.lifecycle("ZI Writer: ключ подписи не найден (${ziKeystoreFile}) — APK будет собран без подписи.")
+}
+
 android {
     namespace 'com.zakharevich.ziwriter'
     compileSdk 34
@@ -11,18 +44,20 @@ android {
         applicationId "com.zakharevich.ziwriter"
         minSdk 24
         targetSdk 34
-        versionCode 25
-        versionName "25.0 SAFE MODE"
+        versionCode ziVersionCode
+        versionName ziVersionName
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
         release {
-            storeFile file('../zi-writer-release.jks')
-            storePassword 'Zakharevich2024'
-            keyAlias 'ziwriter'
-            keyPassword 'Zakharevich2024'
+            if (ziHasKeystore) {
+                storeFile ziKeystoreFile
+                storePassword ziStorePassword
+                keyAlias ziKeyAlias
+                keyPassword ziKeyPassword
+            }
         }
     }
 
@@ -30,10 +65,14 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            signingConfig signingConfigs.release
+            if (ziHasKeystore) {
+                signingConfig signingConfigs.release
+            }
         }
         debug {
-            signingConfig signingConfigs.release
+            if (ziHasKeystore) {
+                signingConfig signingConfigs.release
+            }
         }
     }
     compileOptions {

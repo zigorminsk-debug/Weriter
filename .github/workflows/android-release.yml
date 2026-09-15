@@ -1,0 +1,193 @@
+name: Release APK
+
+# Автоматическая сборка подписанного APK при публикации GitHub Release.
+# Дополнительно можно запустить вручную (Actions -> Release APK -> Run workflow).
+on:
+  release:
+    types: [ published ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Тег релиза, к которому приложить APK (необязательно, напр. v32.0)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-apk:
+    name: Подписанный release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Проверка входных данных
+        id: meta
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -e
+          TAG="${EVENT_TAG:-$INPUT_TAG}"
+          if [ -z "$TAG" ]; then
+            TAG="ci-$RUN_NUMBER"
+            echo "::notice::Тег не задан, сборка без публикации в Release (тег $TAG)"
+          fi
+          # Версия из тега: v31.0 / 31.0 / v32 -> 31.0 / 31.0 / 32
+          VERSION_NAME=$(echo "$TAG" | sed -E 's/^[vV]//' | grep -oE '^[0-9]+(\.[0-9]+)*' || true)
+          if [ -z "$VERSION_NAME" ]; then
+            VERSION_NAME="0.0.$RUN_NUMBER"
+          fi
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION_NAME"
+          MINOR=${MINOR:-0}
+          PATCH=${PATCH:-0}
+          # versionCode = major*10000 + minor*100 + patch (должен только расти!)
+          VERSION_CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))
+          APK_NAME="ZI-Writer-v${VERSION_NAME}.apk"
+          echo "tag=$TAG"                   >> "$GITHUB_OUTPUT"
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "apk_name=$APK_NAME"         >> "$GITHUB_OUTPUT"
+          {
+            echo "### 🏗️ Сборка APK"
+            echo ""
+            echo "| Параметр | Значение |"
+            echo "|---|---|"
+            echo "| Тег | \`$TAG\` |"
+            echo "| versionName | \`$VERSION_NAME\` |"
+            echo "| versionCode | \`$VERSION_CODE\` |"
+            echo "| Файл | \`$APK_NAME\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Проверка Android SDK на раннере
+        run: |
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK" ]; then
+            echo "::error::Android SDK не найден ($SDK)"
+            exit 1
+          fi
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK"      >> "$GITHUB_ENV"
+          echo "SDK=$SDK"
+          ls "$SDK/platforms" 2>/dev/null || true
+
+      - name: Установка platform/build-tools 34
+        run: |
+          SDK="$ANDROID_SDK_ROOT"
+          SDKMANAGER="$(command -v sdkmanager || echo "$SDK/cmdline-tools/latest/bin/sdkmanager")"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" --install "platforms;android-34" "build-tools;34.0.0" "platform-tools" \
+            || echo "::warning::Не удалось доустановить пакеты SDK — пробуем то, что уже есть в образе"
+
+      - name: Ключ подписи
+        id: keystore
+        working-directory: zi-writer
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          set -e
+          if [ -n "${KEYSTORE_BASE64}" ]; then
+            echo "Использую ключ подписи из секрета KEYSTORE_BASE64"
+            printf '%s' "${KEYSTORE_BASE64}" | base64 -d > release.keystore
+            echo "ZIWRITER_STORE_FILE=release.keystore" >> "$GITHUB_ENV"
+            echo "source=secret" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Секрет KEYSTORE_BASE64 не задан — подписываю ключом из репозитория (zi-writer-release.jks). Рекомендуется перенести ключ в секреты."
+            echo "source=repo" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Подготовка окружения сборки
+        working-directory: zi-writer
+        run: |
+          echo "sdk.dir=${ANDROID_SDK_ROOT}" > local.properties
+          sed -i 's/^org.gradle.jvmargs=.*/org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=512m/' gradle.properties
+          sed -i 's/^kotlin.daemon.jvmargs=.*/kotlin.daemon.jvmargs=-Xmx1g -Dfile.encoding=UTF-8/' gradle.properties
+          chmod +x gradlew
+
+      - name: Сборка release APK
+        working-directory: zi-writer
+        env:
+          ZIWRITER_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          ZIWRITER_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          ZIWRITER_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set +e
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace assembleRelease \
+            -PziwriterVersionName="${{ steps.meta.outputs.version_name }}" \
+            -PziwriterVersionCode="${{ steps.meta.outputs.version_code }}" 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            summary=$(grep -E "^(e: |FAILURE:|Caused by:|\* What went wrong:|\* Try:)" -A 2 build.log \
+                      | head -c 3000 | tr '\n' '~' || true)
+            echo "::error title=Ошибка сборки release APK::$summary"
+            exit "$status"
+          fi
+
+      - name: Проверка и переименование APK
+        working-directory: zi-writer
+        run: |
+          set -e
+          SRC=app/build/outputs/apk/release/app-release.apk
+          if [ ! -f "$SRC" ]; then
+            echo "::error::APK не найден: $SRC"
+            ls -la app/build/outputs/apk/release/ || true
+            exit 1
+          fi
+          cp "$SRC" "../${{ steps.meta.outputs.apk_name }}"
+          ls -la "../${{ steps.meta.outputs.apk_name }}"
+          echo "APK_SIZE=$(stat -c%s "../${{ steps.meta.outputs.apk_name }}")" >> "$GITHUB_ENV"
+          # Публикуем контрольную сумму, чтобы пользователи могли проверить файл.
+          sha256sum "../${{ steps.meta.outputs.apk_name }}" | tee ../SHA256SUMS.txt
+
+      - name: Артефакт (release APK)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZI-Writer-release-v${{ steps.meta.outputs.version_name }}
+          path: |
+            ZI-Writer-v*.apk
+            SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Публикация APK в GitHub Release
+        if: github.event_name == 'release' || github.event.inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG="${{ steps.meta.outputs.tag }}"
+          # Если такого релиза ещё нет — создаём его, иначе просто докладываем файлы.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" \
+              "${{ steps.meta.outputs.apk_name }}" \
+              SHA256SUMS.txt \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" \
+              "${{ steps.meta.outputs.apk_name }}" \
+              SHA256SUMS.txt \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "ZI Writer $TAG" \
+              --generate-notes
+          fi

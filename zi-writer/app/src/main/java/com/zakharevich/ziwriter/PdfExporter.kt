@@ -3,7 +3,6 @@ package com.zakharevich.ziwriter
 import android.content.Context
 import android.graphics.Paint
 import android.graphics.pdf.PdfDocument
-import android.os.Environment
 import java.io.File
 import java.io.FileOutputStream
 
@@ -105,17 +104,8 @@ object PdfExporter {
             FileOutputStream(file).use { pdfDocument.writeTo(it) }
             pdfDocument.close()
 
-            // Also try to save to Downloads
-            try {
-                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                if (downloadsDir.exists() || downloadsDir.mkdirs()) {
-                    val downloadFile = File(downloadsDir, fileName)
-                    file.copyTo(downloadFile, overwrite = true)
-                    return downloadFile
-                }
-            } catch (e: Exception) {
-                // ignore
-            }
+            // Also try to save to Downloads (MediaStore на Android 10+, прямая запись на более старых)
+            DownloadSaver.save(context, file, "application/pdf")?.let { return it }
 
             file
         } catch (e: Exception) {
