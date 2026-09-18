@@ -25,6 +25,9 @@ object Fb2Importer {
             try { factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false) } catch (e: Exception) {}
             try { factory.setXIncludeAware(false) } catch (e: Exception) {}
             try { factory.isExpandEntityReferences = false } catch (e: Exception) {}
+            // Ограничиваем разворачивание сущностей («billion laughs»). DOCTYPE в FB2
+            // запрещать нельзя — он встречается в старых файлах, поэтому ставим только лимит.
+            try { factory.setAttribute("http://www.oracle.com/xml/jaxp/properties/entityExpansionLimit", "10000") } catch (e: Exception) {}
             val builder = factory.newDocumentBuilder()
             val doc = builder.parse(input)
             doc.documentElement.normalize()

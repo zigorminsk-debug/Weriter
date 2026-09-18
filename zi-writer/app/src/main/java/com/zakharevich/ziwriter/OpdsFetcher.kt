@@ -20,6 +20,8 @@ object OpdsFetcher {
     )
     const val PRIMARY_OPDS = "http://flibusta.net/opds"
     const val SECONDARY_OPDS = "http://flibusta.is/opds"
+    /** Предел размера скачиваемого файла книги (защита от OOM). */
+    const val MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024
     private val MIRRORS = listOf(
         "http://flibusta.net/opds",
         "https://flibusta.net/opds",
@@ -260,7 +262,7 @@ object OpdsFetcher {
             sb.toString()
         } catch (e: Exception) { null } finally { conn?.disconnect() }
     }
-    fun httpGetBytes(urlStr: String, timeout: Int = 20000): ByteArray? {
+    fun httpGetBytes(urlStr: String, timeout: Int = 20000, maxBytes: Int = MAX_DOWNLOAD_BYTES): ByteArray? {
         var conn: HttpURLConnection? = null
         return try {
             val url = URL(urlStr)
@@ -272,7 +274,20 @@ object OpdsFetcher {
             conn.setRequestProperty("User-Agent", "ZI-Writer/21.0 FLIBUSTA")
             val code = conn.responseCode
             if (code != 200) return null
-            conn.inputStream.readBytes()
+            // Раньше стоял inputStream.readBytes(): ответ любого размера целиком уходил
+            // в память, и большое (или чужое) зеркало могло уронить приложение по OOM.
+            conn.inputStream.use { input ->
+                val buffer = ByteArray(64 * 1024)
+                val out = java.io.ByteArrayOutputStream()
+                var total = 0
+                while (total < maxBytes) {
+                    val read = input.read(buffer, 0, minOf(buffer.size, maxBytes - total))
+                    if (read <= 0) break
+                    out.write(buffer, 0, read)
+                    total += read
+                }
+                if (total == 0) null else out.toByteArray()
+            }
         } catch (e: Exception) { null } finally { conn?.disconnect() }
     }
     fun toBookInfo(opdsBook: OpdsBook): InternetBookFetcher.BookInfo {

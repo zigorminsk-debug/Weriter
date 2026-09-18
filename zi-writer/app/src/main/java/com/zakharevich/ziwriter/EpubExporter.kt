@@ -64,7 +64,6 @@ object EpubExporter {
     <dc:identifier id="BookId">$bookId</dc:identifier>
     <dc:date>$now</dc:date>
     <dc:publisher>ZI Writer</dc:publisher>
-    <meta name="cover" content="cover"/>
   </metadata>
   <manifest>
     <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
@@ -162,7 +161,10 @@ p { text-indent: 1.5em; margin: 0.5em 0; text-align: justify; }
     }
 
     private fun escapeXml(s: String): String {
-        return s.replace("&", "&amp;")
+        // Управляющие символы (кроме \t, \n, \r) в XML 1.0 запрещены: если такой символ
+        // попадёт в текст, книга не откроется в читалке.
+        val clean = s.replace(Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]"), "")
+        return clean.replace("&", "&amp;")
             .replace("<", "&lt;")
             .replace(">", "&gt;")
             .replace("\"", "&quot;")

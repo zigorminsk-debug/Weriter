@@ -115,12 +115,17 @@ object InternetBookFetcher {
         }
     }
 
-    // Combined search - now includes Flibusta OPDS 213.5.65.159
+    /**
+     * Комбинированный поиск по каталогам Gutendex + Open Library.
+     *
+     * Флибуста здесь больше не запрашивается: экран поиска (MainActivity) отдельно
+     * вызывает searchFlibustaOpdsDetailed(), и раньше один и тот же OPDS-запрос
+     * (а внутри него — перебор всех зеркал) выполнялся дважды подряд.
+     */
     fun searchBooks(query: String): List<BookInfo> {
         val gutendex = try { searchGutendex(query) } catch (e: Exception) { emptyList() }
         val openLib = try { searchOpenLibrary(query) } catch (e: Exception) { emptyList() }
-        val flibusta = try { searchFlibustaOpds(query) } catch (e: Exception) { emptyList() }
-        return (flibusta + gutendex + openLib).distinctBy { it.title + it.authors }.take(25)
+        return (gutendex + openLib).distinctBy { it.title + it.authors }.take(25)
     }
 
     fun searchFlibustaOpds(query: String): List<BookInfo> {

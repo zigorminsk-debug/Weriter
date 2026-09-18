@@ -148,17 +148,15 @@ object ChapterIllustrator {
 
             val safeTitle = chapterTitle.replace(Regex("[^A-Za-zА-Яа-я0-9]"), "_").take(20)
             val fileName = "Illust_${safeTitle}_${System.currentTimeMillis()}.png"
-            val dir = File(context.getExternalFilesDir(null), "illustrations")
+            val dir = File(context.getExternalFilesDir(null) ?: context.filesDir, "illustrations")
             if (!dir.exists()) dir.mkdirs()
             val file = File(dir, fileName)
             FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 90, it) }
 
-            try {
-                val dlDir = File("/storage/emulated/0/Download/ZIWriter_Illustrations")
-                if (!dlDir.exists()) dlDir.mkdirs()
-                val dlFile = File(dlDir, fileName)
-                file.copyTo(dlFile, true)
-            } catch (e: Exception) {}
+            // Публикуем иллюстрацию в «Загрузки» так же, как остальные экспортируемые файлы.
+            // Раньше здесь была прямая запись в /storage/emulated/0/Download — на Android 10+
+            // она молча не срабатывала (scoped storage), и картинки оставались в приватной папке.
+            DownloadSaver.save(context, file, "image/png")?.let { return it }
 
             file
         } catch (e: Exception) {
