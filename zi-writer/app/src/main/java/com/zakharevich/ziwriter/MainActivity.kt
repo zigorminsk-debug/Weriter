@@ -839,9 +839,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun exportLearned() {
         try {
             val fileName = "ZIWriter_Learned_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())}.zip"
-            val file = File(getExternalFilesDir(null), fileName)
+            val file = File(getExternalFilesDir(null) ?: filesDir, fileName)
             val ok = LearningManager.exportLearnedToZip(this, file)
-            if (ok) Toast.makeText(this, "Экспорт: ${file.absolutePath}", Toast.LENGTH_LONG).show() else Toast.makeText(this, "Нет данных", Toast.LENGTH_SHORT).show()
+            if (ok) {
+                // Публикуем архив в «Загрузки»: раньше путь вёлся в приватную папку
+                // приложения, откуда пользователь не может забрать файл без провода.
+                val saved = DownloadSaver.save(this, file, "application/zip")
+                Toast.makeText(this, "Экспорт: ${saved?.absolutePath ?: file.absolutePath}", Toast.LENGTH_LONG).show()
+            } else {
+                Toast.makeText(this, "Нет данных", Toast.LENGTH_SHORT).show()
+            }
         } catch (e: Exception) { Toast.makeText(this, "Ошибка: ${e.message}", Toast.LENGTH_LONG).show() }
     }
 
