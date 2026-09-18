@@ -101,8 +101,13 @@ object PdfExporter {
             val fileName = "ZIWriter_${title.replace(Regex("[^A-Za-zА-Яа-я0-9]"), "_").take(20)}_${System.currentTimeMillis()}.pdf"
             val dir = context.getExternalFilesDir(null) ?: context.filesDir
             val file = File(dir, fileName)
-            FileOutputStream(file).use { pdfDocument.writeTo(it) }
-            pdfDocument.close()
+            try {
+                FileOutputStream(file).use { pdfDocument.writeTo(it) }
+            } finally {
+                // Закрываем документ даже при ошибке записи, иначе утекают ресурсы
+                // рендеринга страниц.
+                pdfDocument.close()
+            }
 
             // Also try to save to Downloads (MediaStore на Android 10+, прямая запись на более старых)
             DownloadSaver.save(context, file, "application/pdf")?.let { return it }

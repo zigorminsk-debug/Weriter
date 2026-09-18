@@ -70,21 +70,52 @@ object StoryGenerator {
         return inter.toDouble() / union
     }
 
+    /**
+     * Чистка повторов на уровне предложений.
+     *
+     * ВАЖНО: абзацы сохраняются. Раньше все предложения склеивались через пробел,
+     * поэтому весь готовый текст (роман на десятки листов) превращался в одну
+     * длинную строку: терялись абзацы, разметка «— — — Страница N — — —» и
+     * заголовки глав, и в DOCX/EPUB/PDF всё уезжало одним абзацем.
+     */
     private fun smoothText(text: String): String {
-        val sentences = text.split(Regex("(?<=[.!?])\\s+"))
+        val paragraphs = text.split(Regex("\\n[ \\t]*\\n"))
         val seen = mutableSetOf<String>()
-        val res = mutableListOf<String>()
-        for (s in sentences) {
-            val t = s.trim()
-            if (t.length < 15) { res.add(s); continue }
-            val low = t.lowercase()
-            if (low in seen) continue
-            if (res.takeLast(4).any { jaccard(t, it) > 0.72 }) continue
-            res.add(s)
-            seen.add(low)
-            if (seen.size > 300) seen.removeAll(seen.take(100).toSet())
+        val recent = mutableListOf<String>()
+        val out = mutableListOf<String>()
+        for (paragraph in paragraphs) {
+            val p = paragraph.trim()
+            if (p.isEmpty()) continue
+            // Служебные строки (метки страниц, заголовки глав, «— Конец —») оставляем
+            // как есть: у них похожий набор слов, и фильтр повторов их бы выбросил.
+            if (isStructuralLine(p)) { out.add(p); continue }
+            val sentences = p.split(Regex("(?<=[.!?])\\s+"))
+            val kept = mutableListOf<String>()
+            for (s in sentences) {
+                val t = s.trim()
+                if (t.isEmpty()) continue
+                if (t.length < 15) { kept.add(t); continue }
+                val low = t.lowercase()
+                if (low in seen) continue
+                if (recent.takeLast(4).any { jaccard(t, it) > 0.72 }) continue
+                kept.add(t)
+                seen.add(low)
+                recent.add(t)
+                if (recent.size > 8) recent.removeAt(0)
+                if (seen.size > 300) seen.removeAll(seen.take(100).toSet())
+            }
+            if (kept.isNotEmpty()) out.add(kept.joinToString(" "))
         }
-        return res.joinToString(" ")
+        return out.joinToString("\n\n")
+    }
+
+    /** Служебные строки книги: их нельзя ни склеивать, ни удалять как «повтор». */
+    private fun isStructuralLine(paragraph: String): Boolean {
+        if (paragraph.startsWith("— — — Страница")) return true
+        if (paragraph.startsWith("— Конец —")) return true
+        val first = paragraph.lineSequence().firstOrNull()?.trim().orEmpty()
+        val prefixes = listOf("Глава", "ГЛАВА", "Пролог", "ПРОЛОГ", "Эпилог", "ЭПИЛОГ", "Интерлюдия", "Послесловие", "Предисловие")
+        return prefixes.any { first.startsWith(it) } && first.length < 120
     }
 
     fun generate(config: GenerationConfig): GeneratedStory {
@@ -233,7 +264,15 @@ object StoryGenerator {
         sb.append(generateEnding(config.genre, heroes, enrichedKeywords, mainPlace, isPhil, config.authorName, original))
         var finalText = sb.toString().take(targetChars + 1000)
         finalText = smoothText(finalText)
-        finalText = finalText.replace(Regex("\\s+"), " ").replace(" .", ".").replace(" ,", ",").replace("  ", " ")
+        // Схлопываем только лишние пробелы и табуляции. Раньше здесь стоял Regex("\\s+"),
+        // который вместе с пробелами съедал и переводы строк — абзацы и метки страниц
+        // пропадали из экспортируемого текста.
+        finalText = finalText
+            .replace(Regex("[ \\t\\u00A0]+"), " ")
+            .replace(Regex("[ \\t]*\\n[ \\t]*"), "\n")
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .replace(" .", ".")
+            .replace(" ,", ",")
 
         val actualPages = (finalText.length + CHARS_PER_PAGE - 1) / CHARS_PER_PAGE
         return GeneratedStory(title, finalText, finalText.length, actualPages, if (heroes.isEmpty()) listOf("он") else heroes, enrichedKeywords, original)

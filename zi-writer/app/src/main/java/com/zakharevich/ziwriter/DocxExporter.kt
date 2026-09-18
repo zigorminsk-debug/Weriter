@@ -110,7 +110,10 @@ $paragraphsXml
     }
 
     private fun escapeXml(s: String): String {
-        return s.replace("&", "&amp;")
+        // Управляющие символы (кроме \t, \n, \r) в XML 1.0 запрещены: с ними Word
+        // считает файл повреждённым.
+        val clean = s.replace(Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]"), "")
+        return clean.replace("&", "&amp;")
             .replace("<", "&lt;")
             .replace(">", "&gt;")
             .replace("\"", "&quot;")

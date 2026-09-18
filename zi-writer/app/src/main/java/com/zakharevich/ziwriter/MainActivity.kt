@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.text.Editable
 import android.text.TextWatcher
+import android.util.TypedValue
 import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Toast
@@ -31,10 +32,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private lateinit var binding: ActivityMainBinding
     private var generatedStory: StoryGenerator.GeneratedStory? = null
+    /** Размер текста в sp (раньше значение трактовалось как px — текст становился крошечным). */
     private var currentFontSize = 14f
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var ttsSpeed = 1.0f
+    /** true после onDestroy: движок TTS мог инициализироваться позже и остаться в памяти. */
+    private var ttsReleased = false
     private var selectedCoverStyle: CoverGenerator.CoverStyle? = null
     private var lastSearchResults: List<InternetBookFetcher.BookInfo> = emptyList()
     private var lastOpdsResults: List<OpdsFetcher.OpdsBook> = emptyList()
@@ -165,6 +169,19 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         } catch (e: Exception) {}
     }
 
+    /**
+     * Размер шрифта задаём в sp (как в разметке). Дополнительно учитываем системный
+     * масштаб шрифта, который пользователь выставил в настройках Android.
+     */
+    private fun applyFontSize(view: android.widget.TextView, sp: Float) {
+        val scaled = TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_SP,
+            sp,
+            resources.displayMetrics
+        )
+        view.setTextSize(TypedValue.COMPLEX_UNIT_PX, scaled)
+    }
+
     private fun readLimited(reader: java.io.Reader, limit: Int): String {
         val buffer = CharArray(limit)
         var total = 0
@@ -176,7 +193,23 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         return String(buffer, 0, total)
     }
 
+    /** Читает только начало файла: полный текст книги в память не тянем. */
+    private fun readFileHead(file: File, limit: Int): String? {
+        return try {
+            file.bufferedReader().use { readLimited(it, limit) }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     override fun onInit(status: Int) {
+        // Движок поднимается асинхронно и может «догнать» уже уничтоженную Activity —
+        // тогда его нужно сразу освободить, а не держать в памяти.
+        if (ttsReleased || isFinishing || isDestroyed) {
+            tts?.shutdown()
+            tts = null
+            return
+        }
         ttsReady = status == TextToSpeech.SUCCESS
         if (ttsReady) {
             val result = tts?.setLanguage(Locale("ru", "RU"))
@@ -187,9 +220,23 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
+    override fun onStop() {
+        // Не озвучиваем книгу, когда приложение ушло в фон.
+        try {
+            if (tts?.isSpeaking == true) {
+                tts?.stop()
+                if (::binding.isInitialized) binding.btnTts.text = "Озвучить"
+            }
+        } catch (e: Exception) {}
+        super.onStop()
+    }
+
     override fun onDestroy() {
+        ttsReleased = true
+        ttsReady = false
         tts?.stop()
         tts?.shutdown()
+        tts = null
         super.onDestroy()
     }
 
@@ -290,15 +337,15 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         binding.btnFontMinus.setOnClickListener {
             if (currentFontSize > 10) {
                 currentFontSize -= 1
-                binding.etResult.textSize = currentFontSize
-                binding.etInput.textSize = currentFontSize
+                applyFontSize(binding.etResult, currentFontSize)
+                applyFontSize(binding.etInput, currentFontSize)
             }
         }
         binding.btnFontPlus.setOnClickListener {
             if (currentFontSize < 22) {
                 currentFontSize += 1
-                binding.etResult.textSize = currentFontSize
-                binding.etInput.textSize = currentFontSize
+                applyFontSize(binding.etResult, currentFontSize)
+                applyFontSize(binding.etInput, currentFontSize)
             }
         }
         binding.btnEditFull.setOnClickListener { openFullEditor() }
@@ -503,8 +550,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             binding.progress.visibility = View.GONE
             binding.btnGenerate.isEnabled = true
             binding.btnContinue.isEnabled = true
-            generatedStory = if (isContinue && generatedStory != null) {
-                val combined = generatedStory!!.fullText + "\n\n" + story.fullText.substringAfter("— — — Страница 1 — — —", "").let { if (it.isEmpty()) story.fullText else it }.take(pages * 1800)
+            val previous = generatedStory
+            generatedStory = if (isContinue && previous != null) {
+                // Продолжение: в книгу добавляем только новый кусок текста. Если метка
+                // первой страницы не найдена, отбрасываем уже имеющееся начало — иначе
+                // весь прежний текст попадал в книгу второй раз.
+                val pageMarker = "— — — Страница 1 — — —"
+                val newPart = story.fullText.substringAfter(pageMarker, "")
+                    .ifBlank { story.fullText.removePrefix(previous.fullText) }
+                    .take(pages * 1800)
+                val combined = previous.fullText + "\n\n" + newPart
                 story.copy(fullText = combined, chars = combined.length, pages = (combined.length + 1799) / 1800)
             } else story
             binding.tvResultTitle.text = generatedStory!!.title
@@ -730,7 +785,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 AlertDialog.Builder(this@MainActivity).setTitle("📚 Изученные (${books.size}) OPDS").setItems(items) { _, which ->
                     val selected = books[which]
                     AlertDialog.Builder(this@MainActivity).setTitle(selected.title).setMessage("Автор: ${selected.authors}\nЖанр: ${selected.genre}\nЗнаков: ${selected.chars}").setPositiveButton("Загрузить") { _, _ ->
-                        try { val content = File(selected.path).readText().take(10000); binding.etInput.setText(content) } catch (e: Exception) {}
+                        // Раньше файл целиком читался в главном потоке — на больших книгах
+                        // это подвешивало интерфейс.
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            val content = readFileHead(File(selected.path), 10000)
+                            withContext(Dispatchers.Main) {
+                                if (isFinishing || isDestroyed) return@withContext
+                                if (content.isNullOrEmpty()) {
+                                    Toast.makeText(this@MainActivity, "Не удалось прочитать файл", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    binding.etInput.setText(content)
+                                    Toast.makeText(this@MainActivity, "Загружено ${content.length} знаков", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
                     }.setNegativeButton("Закрыть", null).show()
                 }.setNegativeButton("Закрыть", null).show()
             }
@@ -866,16 +934,36 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         Toast.makeText(this, "Скопировано", Toast.LENGTH_SHORT).show()
     }
     private fun showHistory() {
-        val history = HistoryManager.getHistory(this)
-        if (history.isEmpty()) { Snackbar.make(binding.root, "Библиотека пуста", Snackbar.LENGTH_SHORT).show(); return }
-        val items = history.map { "${it.title} • ${it.chars} зн" }.toTypedArray()
-        AlertDialog.Builder(this).setTitle("📚 Библиотека (${history.size})").setItems(items) { _, which ->
-            val selected = history[which]
-            HistoryManager.loadHistoryItem(selected.path)?.let { content ->
-                binding.etResult.setText(content); binding.tvResultTitle.text = selected.title; binding.cardResult.visibility = View.VISIBLE
-                generatedStory = StoryGenerator.GeneratedStory(selected.title, content, content.length, (content.length + 1799) / 1800, emptyList(), emptyList(), "")
+        // Библиотека читается с диска: делаем это вне главного потока, иначе при десятках
+        // сохранённых книг интерфейс «замирает» (а на больших текстах возможен ANR).
+        lifecycleScope.launch(Dispatchers.IO) {
+            val history = HistoryManager.getHistory(this@MainActivity)
+            withContext(Dispatchers.Main) {
+                if (isFinishing || isDestroyed) return@withContext
+                if (history.isEmpty()) {
+                    Snackbar.make(binding.root, "Библиотека пуста", Snackbar.LENGTH_SHORT).show()
+                    return@withContext
+                }
+                val items = history.map { "${it.title} • ${it.chars} зн" }.toTypedArray()
+                AlertDialog.Builder(this@MainActivity).setTitle("📚 Библиотека (${history.size})").setItems(items) { _, which ->
+                    val selected = history[which]
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        val content = HistoryManager.loadHistoryItem(selected.path)
+                        withContext(Dispatchers.Main) {
+                            if (isFinishing || isDestroyed) return@withContext
+                            if (content.isNullOrEmpty()) {
+                                Toast.makeText(this@MainActivity, "Не удалось открыть файл", Toast.LENGTH_SHORT).show()
+                                return@withContext
+                            }
+                            binding.etResult.setText(content)
+                            binding.tvResultTitle.text = selected.title
+                            binding.cardResult.visibility = View.VISIBLE
+                            generatedStory = StoryGenerator.GeneratedStory(selected.title, content, content.length, (content.length + 1799) / 1800, emptyList(), emptyList(), "")
+                        }
+                    }
+                }.setNegativeButton("Закрыть", null).show()
             }
-        }.setNegativeButton("Закрыть", null).show()
+        }
     }
 
     // v30: Full editor for entire generated text
@@ -897,7 +985,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         etTitle.setText(currentTitle)
         etContent.setText(currentText)
-        etContent.textSize = currentFontSize
+        applyFontSize(etContent, currentFontSize)
 
         fun updateStats() {
             val txt = etContent.text.toString()
@@ -916,13 +1004,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         btnMinus.setOnClickListener {
             if (currentFontSize > 10) {
                 currentFontSize -= 1
-                etContent.textSize = currentFontSize
+                applyFontSize(etContent, currentFontSize)
             }
         }
         btnPlus.setOnClickListener {
             if (currentFontSize < 24) {
                 currentFontSize += 1
-                etContent.textSize = currentFontSize
+                applyFontSize(etContent, currentFontSize)
             }
         }
 
