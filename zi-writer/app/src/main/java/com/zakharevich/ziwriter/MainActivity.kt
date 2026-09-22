@@ -463,7 +463,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
             if (release == null) {
                 if (!silent) {
-                    Snackbar.make(binding.root, "Не удалось проверить обновления. Проверьте интернет.", Snackbar.LENGTH_LONG).show()
+                    val reason = UpdateManager.lastCheckError
+                        ?: "Не удалось проверить обновления."
+                    Snackbar.make(binding.root, "⚠️ $reason", Snackbar.LENGTH_LONG).show()
                 }
                 return@launch
             }
@@ -597,8 +599,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         binding.btnGenerate.isEnabled = false
         binding.btnContinue.isEnabled = false
         lifecycleScope.launch {
-            // v31 MATH MODEL: learnedTemplates больше НЕ используются для вставки чужих отрывков! Только герои/места/обороты + сюжеты
-            val learnedTemplates = withContext(Dispatchers.IO) { emptyList<String>() }
+            // v35: передаём РЕАЛЬНЫЕ предложения из изученных книг — это основа генерации.
+            // Раньше здесь был emptyList() из-за чего генератор работал без материала!
+            val learnedTemplates = withContext(Dispatchers.IO) {
+                if (useLearned) {
+                    val genreKey = if (genre.startsWith("Авто")) "general" else genre
+                    val byGenre = try { LearningManager.getLearnedTemplates(this@MainActivity, genreKey, 300) } catch (e: Exception) { emptyList() }
+                    val all = try { LearningManager.getLearnedTemplates(this@MainActivity, "all", 500) } catch (e: Exception) { emptyList() }
+                    (byGenre + all).distinct()
+                } else emptyList()
+            }
             val learnedHeroes = withContext(Dispatchers.IO) { if (useLearned) LearningManager.getLearnedHeroes(this@MainActivity, 150) else emptyList() }
             val learnedPlaces = withContext(Dispatchers.IO) { if (useLearned) LearningManager.getLearnedPlaces(this@MainActivity, 150) else emptyList() }
             val learnedPhrases = withContext(Dispatchers.IO) { if (useLearned) LearningManager.getLearnedPhrases(this@MainActivity, 150) else emptyList() }

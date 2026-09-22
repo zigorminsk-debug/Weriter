@@ -42,6 +42,26 @@ object UpdateManager {
     private const val GITHUB_REPO = "Weriter"
     private const val RELEASES_API = "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases/latest"
     
+    // Альтернативные endpoints на случай блокировки api.github.com
+    // 1) releases/latest — официальный API (НЕ возвращает pre-release!)
+    // 2) releases?per_page=5 — список релизов (возвращает и pre-release)
+    // 3) RELEASE_INFO.json на raw.githubusercontent (часто доступен, когда API заблокирован)
+    private val FALLBACK_URLS = listOf(
+        RELEASES_API,
+        "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases?per_page=5",
+        "https://raw.githubusercontent.com/$GITHUB_OWNER/$GITHUB_REPO/main/RELEASE_INFO.json",
+        "https://raw.githubusercontent.com/$GITHUB_OWNER/$GITHUB_REPO/master/RELEASE_INFO.json"
+    )
+
+    /**
+     * Причина последней неудачной проверки обновлений.
+     * null если проверка прошла успешно.
+     * Заполняется понятным для пользователя текстом на русском.
+     */
+    @Volatile
+    var lastCheckError: String? = null
+        private set
+    
     // Имя пакета для установки (используется для поиска APK в релизе)
     private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
 
@@ -65,6 +85,7 @@ object UpdateManager {
      * @return ReleaseInfo с информацией о версии или null, если проверка не удалась
      */
     suspend fun checkForUpdate(context: Context): ReleaseInfo? = withContext(Dispatchers.IO) {
+        lastCheckError = null
         try {
             Log.d(TAG, "Проверка обновлений...")
             
@@ -73,9 +94,52 @@ object UpdateManager {
             
             Log.d(TAG, "Текущая версия: $currentVersionName (code: $currentVersionCode)")
             
-            // Получаем информацию о последнем релизе с GitHub
-            val json = httpGet(RELEASES_API) ?: return@withContext null
-            val release = JSONObject(json)
+            // Перебираем endpoints по очереди: api.github.com может быть заблокирован
+            // провайдером, а releases/latest не возвращает pre-release.
+            var release: JSONObject? = null
+            val connectionErrors = mutableListOf<String>()
+            var sawNotFound = false
+            
+            for (url in FALLBACK_URLS) {
+                val res = httpGet(url)
+                
+                if (res.error != null) {
+                    Log.w(TAG, "$url — сбой: ${res.error}")
+                    connectionErrors.add(res.error)
+                    continue
+                }
+                
+                if (res.code == 404) {
+                    Log.w(TAG, "404 от $url — релиз не найден")
+                    sawNotFound = true
+                    continue
+                }
+                
+                if (res.code != 200 || res.body == null) {
+                    Log.w(TAG, "HTTP ${res.code} от $url")
+                    continue
+                }
+                
+                val parsed = parseReleaseJson(res.body)
+                if (parsed != null) {
+                    release = parsed
+                    Log.d(TAG, "Успешный ответ: $url")
+                    break
+                }
+            }
+            
+            if (release == null) {
+                lastCheckError = when {
+                    // Ни один endpoint не ответил — проблема с сетью/блокировкой
+                    connectionErrors.size >= FALLBACK_URLS.size - (if (sawNotFound) 1 else 0) && connectionErrors.isNotEmpty() ->
+                        "Нет связи с GitHub. Проверьте интернет. Если интернет есть — провайдер может блокировать GitHub, попробуйте VPN."
+                    sawNotFound ->
+                        "На GitHub пока нет подходящего релиза с обновлением."
+                    else ->
+                        "Не удалось получить данные с GitHub. Попробуйте позже."
+                }
+                return@withContext null
+            }
             
             val tagName = release.optString("tag_name", "")
             val releaseNotes = release.optString("body", "")
@@ -83,6 +147,7 @@ object UpdateManager {
             
             if (tagName.isEmpty()) {
                 Log.w(TAG, "tag_name пустой в ответе GitHub API")
+                lastCheckError = "Ответ GitHub не содержит номер версии."
                 return@withContext null
             }
             
@@ -95,7 +160,7 @@ object UpdateManager {
             // Проверяем, есть ли новая версия
             val isAvailable = latestVersionCode > currentVersionCode
             
-            // Ищем APK файл в assets релиза
+            // Ищем APK файл в assets релиза (формат api.github.com)
             val assets = release.optJSONArray("assets")
             var apkUrl: String? = null
             var apkFileName: String? = null
@@ -115,6 +180,16 @@ object UpdateManager {
                 }
             }
             
+            // Формат RELEASE_INFO.json (raw.githubusercontent): прямая ссылка в поле apk_url
+            if (apkUrl == null) {
+                val directUrl = release.optString("apk_url", "")
+                if (directUrl.isNotBlank()) {
+                    apkUrl = directUrl
+                    apkFileName = directUrl.substringAfterLast('/')
+                    Log.d(TAG, "APK из apk_url: $apkFileName -> $apkUrl")
+                }
+            }
+            
             ReleaseInfo(
                 tagName = tagName,
                 versionName = versionName,
@@ -128,6 +203,55 @@ object UpdateManager {
             
         } catch (e: Exception) {
             Log.e(TAG, "Ошибка проверки обновлений: ${e.message}", e)
+            lastCheckError = "Ошибка обработки ответа GitHub: ${e.message ?: "неизвестная"}"
+            null
+        }
+    }
+
+    /**
+     * Разбирает ответ GitHub в JSONObject одного релиза.
+     *
+     * Поддерживает два формата:
+     * 1. Объект — ответ releases/latest или RELEASE_INFO.json
+     * 2. Массив — ответ releases?per_page=5 (берёт первый релиз с APK,
+     *    или просто первый; этот endpoint возвращает и pre-release)
+     *
+     * @return JSONObject релиза или null если формат не распознан
+     */
+    private fun parseReleaseJson(body: String): JSONObject? {
+        return try {
+            val trimmed = body.trim()
+            when {
+                trimmed.startsWith("[") -> {
+                    val arr = org.json.JSONArray(trimmed)
+                    if (arr.length() == 0) return null
+                    // Предпочитаем первый релиз, к которому приложен APK
+                    var first: JSONObject? = null
+                    for (i in 0 until arr.length()) {
+                        val item = arr.getJSONObject(i)
+                        if (first == null) first = item
+                        val assets = item.optJSONArray("assets")
+                        if (assets != null) {
+                            for (j in 0 until assets.length()) {
+                                val asset = assets.getJSONObject(j)
+                                if (asset.optString("name", "").endsWith(".apk", ignoreCase = true)) {
+                                    return item
+                                }
+                            }
+                        }
+                        // Формат RELEASE_INFO.json в массиве — берём по apk_url
+                        if (item.optString("apk_url", "").isNotBlank()) return item
+                    }
+                    first
+                }
+                trimmed.startsWith("{") -> JSONObject(trimmed)
+                else -> {
+                    Log.w(TAG, "Неизвестный формат ответа (не JSON)")
+                    null
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Ошибка разбора JSON: ${e.message}")
             null
         }
     }
@@ -347,26 +471,34 @@ object UpdateManager {
     }
 
     /**
-     * Выполняет HTTP GET запрос и возвращает тело ответа как строку
+     * Результат HTTP запроса: тело ответа, код или описание ошибки.
      */
-    private fun httpGet(urlStr: String, timeout: Int = 15000): String? {
+    private class HttpResult(val code: Int, val body: String?, val error: String?)
+
+    /**
+     * Выполняет HTTP GET запрос. Возвращает HttpResult с телом ответа,
+     * кодом ответа или понятным описанием ошибки.
+     */
+    private fun httpGet(urlStr: String, timeout: Int = 12000): HttpResult {
         var conn: HttpURLConnection? = null
         return try {
+            Log.d(TAG, "HTTP GET: $urlStr")
             val url = URL(urlStr)
             conn = url.openConnection() as HttpURLConnection
             conn.requestMethod = "GET"
             conn.connectTimeout = timeout
             conn.readTimeout = timeout
             conn.instanceFollowRedirects = true
-            conn.setRequestProperty("Accept", "application/json")
+            conn.setRequestProperty("Accept", "application/vnd.github+json, application/json")
             conn.setRequestProperty("User-Agent", "ZI-Writer-UpdateChecker")
-            
+
             val responseCode = conn.responseCode
+            Log.d(TAG, "HTTP Response: $responseCode")
+
             if (responseCode != HttpURLConnection.HTTP_OK) {
-                Log.w(TAG, "HTTP $responseCode from $urlStr")
-                return null
+                return HttpResult(responseCode, null, null)
             }
-            
+
             val reader = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8))
             val sb = StringBuilder()
             var line: String?
@@ -374,10 +506,21 @@ object UpdateManager {
                 sb.append(line)
             }
             reader.close()
-            sb.toString()
+            val result = sb.toString()
+            Log.d(TAG, "Response length: ${result.length}")
+            HttpResult(responseCode, result, null)
+        } catch (e: java.net.UnknownHostException) {
+            Log.e(TAG, "DNS не решился: ${e.message}")
+            HttpResult(0, null, "хост не найден (нет интернета или заблокирован)")
+        } catch (e: java.net.SocketTimeoutException) {
+            Log.e(TAG, "Таймаут: ${e.message}")
+            HttpResult(0, null, "таймаут соединения")
+        } catch (e: java.io.IOException) {
+            Log.e(TAG, "Ошибка сети: ${e.message}")
+            HttpResult(0, null, "ошибка сети: ${e.message ?: "соединение прервано"}")
         } catch (e: Exception) {
             Log.e(TAG, "HTTP GET error: ${e.message}", e)
-            null
+            HttpResult(0, null, e.message ?: "неизвестная ошибка")
         } finally {
             conn?.disconnect()
         }

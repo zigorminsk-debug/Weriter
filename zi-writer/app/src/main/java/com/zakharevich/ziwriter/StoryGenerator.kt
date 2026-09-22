@@ -3,14 +3,15 @@ package com.zakharevich.ziwriter
 import kotlin.random.Random
 
 /**
- * StoryGenerator v33 — литературный генератор с осмысленным повествованием
+ * StoryGenerator v35 — генератор на основе РЕАЛЬНЫХ изученных текстов
  *
- * Основные принципы:
- * 1. Анализ исходного текста: пол героев, время, стиль, настроение
- * 2. Извлечение речевых паттернов из изученных текстов
- * 3. Связное повествование с причиной-следствием
- * 4. Правильная морфология (склонение имён, местоимений)
- * 5. Сюжетная линия, а не набор случайных предложений
+ * Ключевое отличие от v33/v34:
+ * - НЕ использует шаблоны ("ночь встал посмотрел" = бред)
+ * - БЕРЁТ РЕАЛЬНЫЕ предложения из learnedPhrases (изученные книги с Флибусты)
+ * - Строит текст как последовательность настоящих литературных фраз
+ * - Адаптирует: заменяет имена, корректирует род глаголов
+ *
+ * Результат: связный текст в стиле изученных авторов.
  */
 
 object StoryGenerator {
@@ -48,37 +49,7 @@ object StoryGenerator {
 
     private const val CHARS_PER_PAGE = 1800
 
-    // === ПРОФИЛЬ ТЕКСТА ===
-    data class TextProfile(
-        val gender: String,    // "f" / "m"
-        val tense: String,     // "past" / "present"
-        val person: String,    // "first" / "third"
-        val mood: String       // "serious", "light", "dramatic", "philosophical"
-    )
-
-    // === ГЕРОЙ С ПОЛОМ ===
-    data class Character(
-        val name: String,
-        val gender: String,    // "m" или "f"
-        val pronoun: String,   // "он" / "она"
-        val possessive: String // "его" / "её"
-    ) {
-        /** Глагол прошедшего времени с правильным окончанием по роду.
-         *  Пример: verbPast("понял") → "поняла" для ж.р. */
-        fun verbPast(base: String): String {
-            // Базовая форма должна быть в муж.роде: "стоял", "пошёл", "увидел"
-            return if (gender == "f") {
-                when {
-                    base.endsWith("ёл") -> base.dropLast(2) + "ла"   // пошёл → пошла
-                    base.endsWith("ил") -> base.dropLast(2) + "ла"   // увидел → увидела
-                    base.endsWith("ёл") -> base.dropLast(2) + "ла"
-                    else -> base + "а"
-                }
-            } else base
-        }
-    }
-
-    // === ОПРЕДЕЛЕНИЕ ЖАНРА (нужен LearningManager) ===
+    // === ОПРЕДЕЛЕНИЕ ЖАНРА ===
     fun detectGenreStatic(text: String): String {
         val lower = text.lowercase()
         return when {
@@ -94,146 +65,103 @@ object StoryGenerator {
         }
     }
 
-    // === АНАЛИЗ ПРОФИЛЯ ИСХОДНОГО ТЕКСТА ===
-    private fun analyzeProfile(text: String): TextProfile {
-        val lower = text.lowercase()
+    // === ИЗВЛЕЧЕНИЕ КЛЮЧЕВЫХ СЛОВ ===
+    private fun extractKeywords(text: String): List<String> {
+        val words = text.lowercase()
+            .replace(Regex("[^а-яёa-z ]"), " ")
+            .split(Regex("\\s+"))
+            .filter { it.length in 4..20 }
 
-        // Пол главного героя — ищем первое встретившееся женское или мужское имя
-        val femaleNames = setOf("анна", "мария", "елена", "ольга", "татьяна", "наталья", "юлия", "дарья", "ксения", "ирина", "светлана", "лариса", "гал", "вали", "кат", "маш", "лен", "тан", "наст", "оксан", "вери", "александр")
-        val maleNames = setOf("алекс", "игорь", "дмитрий", "сергей", "иван", "петр", "андрей", "михаил", "виктор", "николай", "владимир", "артём", "максим", "кирилл", "павел", "роман", "денис", "евгений", "константин")
+        val stopWords = setOf(
+            "который", "которая", "которые", "которое", "которых", "потому", "однако",
+            "только", "очень", "сейчас", "тогда", "чтобы", "когда", "такой", "такая",
+            "такое", "такие", "было", "была", "были", "будет", "будут", "можно",
+            "нужно", "надо", "через", "против", "между", "самый", "самом", "самой",
+            "этот", "эта", "это", "эти", "этого", "этой", "этом", "тот", "та", "то",
+            "те", "того", "той", "том", "весь", "вся", "всё", "все", "всех", "всем",
+            "всеми", "всю", "сам", "сама", "сами", "его", "её", "ее", "еще", "ещё",
+            "может", "твоя", "твои", "меня", "мне", "мной", "тебя", "тебе", "тобой",
+            "себя", "себе", "собой", "нас", "нам", "нами", "вас", "вам"
+        )
 
-        val hasFemale = femaleNames.any { lower.contains(it) }
-        val hasMale = maleNames.any { lower.contains(it) }
-        val gender = when {
-            hasFemale && !hasMale -> "f"
-            hasMale && !hasFemale -> "m"
-            lower.contains(" она ") -> "f"
-            else -> "m"
-        }
-
-        // Время повествования
-        val tense = if (lower.contains("стоял") || lower.contains("пошёл") || lower.contains("увидел") ||
-            lower.contains("сказал") || lower.contains("подумал")
-        ) "past" else "present"
-
-        // Лицо повествования
-        val person = if (lower.contains(" я ") || lower.contains(" мне ") || lower.startsWith("я ")) "first" else "third"
-
-        // Настроение
-        val mood = when {
-            lower.contains("странное") || lower.contains("тревог") || lower.contains("испуг") -> "dramatic"
-            lower.contains("жизнь") || lower.contains("смысл") || lower.contains("душа") -> "philosophical"
-            lower.contains("смешно") || lower.contains("радост") || lower.contains("весел") -> "light"
-            else -> "serious"
-        }
-
-        return TextProfile(gender, tense, person, mood)
+        val filtered = words.filter { it !in stopWords }
+        return filtered.groupingBy { it }.eachCount()
+            .entries.sortedByDescending { it.value }
+            .map { it.key }
+            .take(20)
     }
 
-    // === ИЗВЛЕЧЕНИЕ ГЕРОЕВ С ПОЛОМ ===
-    private fun extractCharacters(text: String, customHeroes: List<String>): List<Character> {
-        if (customHeroes.isNotEmpty()) {
-            return customHeroes.map { name -> createCharacter(name) }
-        }
+    // === ИЗВЛЕЧЕНИЕ ГЕРОЕВ ИЗ ТЕКСТА ===
+    private val commonFirstNames = setOf(
+        "марина", "алексей", "алекс", "игорь", "анна", "елена", "дмитрий", "сергей",
+        "ольга", "татьяна", "иван", "петр", "мария", "наталья", "андрей", "михаил",
+        "юлия", "светлана", "виктор", "николай", "владимир", "екатерина", "александр",
+        "александра", "ксения", "дарья", "артем", "артём", "максим", "кирилл", "павел",
+        "роман", "денис", "евгений", "константин", "валентина", "гал", "оксана", "ирина"
+    )
 
-        // Извлекаем имена из текста: слова с заглавной буквы длиной 3+
-        val candidates = mutableMapOf<String, Int>()
+    private fun extractHeroesFromText(text: String): List<String> {
         val sentences = text.split(Regex("[.!?]+")).map { it.trim() }.filter { it.isNotEmpty() }
-
-        val femaleNames = setOf("анна", "мария", "елена", "ольга", "татьяна", "наталья", "юлия", "дарья", "ксения", "ирина", "светлана", "лариса", "валентина", "гал", "кат", "маш", "лен", "тан", "наст", "оксан", "вери", "екатерин", "александр")
-        val maleNames = setOf("алекс", "игорь", "дмитрий", "сергей", "иван", "петр", "андрей", "михаил", "виктор", "николай", "владимир", "артём", "максим", "кирилл", "павел", "роман", "денис", "евгений", "константин")
-
-        // Исключаем слова, которые не являются именами
-        val nonNames = setOf("Это", "Тот", "Та", "Там", "Тут", "Как", "Что", "Кто", "Где", "Когда", "Зачем", "Почему", "Однако", "Потом", "Вдруг", "Между")
+        val candidates = mutableMapOf<String, Int>()
 
         for (sentence in sentences.take(50)) {
             val words = sentence.split(Regex("\\s+"))
             for (word in words) {
                 val clean = word.replace(Regex("[^А-Яа-яЁёA-Za-z-]"), "")
-                if (clean.length < 3) continue
-                if (clean in nonNames) continue
-                if (clean.matches(Regex("[А-ЯЁ][а-яё]{2,}"))) {
-                    candidates[clean] = (candidates[clean] ?: 0) + 1
+                if (clean.length < 3 || clean.length > 15) continue
+                if (!clean.matches(Regex("[А-ЯЁ][а-яё]{2,}"))) continue
+
+                val lower = clean.lowercase()
+                if (lower in commonFirstNames) {
+                    candidates[clean] = (candidates[clean] ?: 0) + 2
+                } else {
+                    val countInText = Regex("\\b${Regex.escape(clean)}\\b", RegexOption.IGNORE_CASE)
+                        .findAll(text).count()
+                    if (countInText <= 10) {
+                        candidates[clean] = (candidates[clean] ?: 0) + 1
+                    }
                 }
             }
         }
 
-        // Сортируем по частоте, берём топ-3
-        val topNames = candidates.entries
+        return candidates.entries
             .sortedByDescending { it.value }
             .map { it.key }
             .take(3)
-
-        return topNames.map { createCharacter(it) }
     }
 
-    private fun createCharacter(name: String): Character {
+    // === ОПРЕДЕЛЕНИЕ ПОЛА ИМЕНИ ===
+    private fun detectGender(name: String): String {
         val lower = name.lowercase()
-        val isFemale = when {
-            lower.endsWith("а") || lower.endsWith("я") -> true
-            lower.endsWith("ина") || lower.endsWith("ёна") -> true
-            // Известные мужские имена, оканчивающиеся на "а"
-            lower in setOf("никита", "илья", "лука", "фома", "савва") -> false
-            else -> false
-        }
-        return if (isFemale) {
-            Character(name, "f", "она", "её")
-        } else {
-            Character(name, "m", "он", "его")
-        }
-    }
-
-    // === ОПРЕДЕЛЕНИЕ МЕСТА ДЕЙСТВИЯ ИЗ ТЕКСТА ===
-    private fun detectSetting(text: String, customPlace: String, profile: TextProfile): String {
-        if (customPlace.isNotEmpty()) return customPlace
-        val lower = text.lowercase()
         return when {
-            lower.contains("офис") || lower.contains("работ") -> "в офисе"
-            lower.contains("дом") || lower.contains("квартир") -> "дома"
-            lower.contains("улиц") || lower.contains("город") -> "на улице города"
-            lower.contains("лес") || lower.contains("парк") -> "в парке"
-            lower.contains("море") || lower.contains("берег") -> "на берегу моря"
-            lower.contains("кафе") || lower.contains("ресторан") -> "в кафе"
-            lower.contains("вокзал") || lower.contains("поезд") -> "на вокзале"
-            lower.contains("школ") || lower.contains("университет") -> "в учебном заведении"
-            lower.contains("больниц") -> "в больнице"
-            else -> "в знакомом месте"
-        }
-    }
-
-    // === ОПРЕДЕЛЕНИЕ ВРЕМЕНИ СУТОК ===
-    private fun detectTimeOfDay(text: String): String {
-        val lower = text.lowercase()
-        return when {
-            lower.contains("утр") || lower.contains("рассвет") -> "Утром"
-            lower.contains("вечер") || lower.contains("закат") -> "Вечером"
-            lower.contains("ночь") || lower.contains("темн") -> "Ночью"
-            else -> "Днём"
+            lower in setOf("никита", "илья", "лука", "фома", "савва") -> "m"
+            lower.endsWith("а") || lower.endsWith("я") -> "f"
+            lower.endsWith("ина") || lower.endsWith("ёна") -> "f"
+            else -> "m"
         }
     }
 
     // === ГЛАВНАЯ ФУНКЦИЯ ГЕНЕРАЦИИ ===
+
     fun generate(config: GenerationConfig): GeneratedStory {
         val rawOriginal = config.originalText.trim()
         val original = if (config.fixGrammar) GrammarCorrector.correct(rawOriginal) else rawOriginal
         val targetChars = config.pages * CHARS_PER_PAGE
 
-        // Анализируем профиль исходного текста
-        val profile = analyzeProfile(original)
-
-        // Извлекаем героев с правильным полом
-        val characters = extractCharacters(original, config.customHeroes)
-        val mainHero = characters.firstOrNull() ?: Character("Герой", "m", "он", "его")
-        val secondHero = characters.getOrElse(1) { null }
-
-        // Определяем место и время
-        val setting = detectSetting(original, config.customPlace, profile)
-        val timeOfDay = detectTimeOfDay(original)
-
-        // Ключевые слова (для темы)
+        // Извлекаем ключевые слова и героев
         val keywords = extractKeywords(original)
-        val mainKeyword = keywords.firstOrNull() ?: "тайна"
-        val secondKeyword = keywords.getOrElse(1) { "судьба" }
+        val extractedHeroes = extractHeroesFromText(original)
+        val heroes = when {
+            config.customHeroes.isNotEmpty() -> config.customHeroes
+            config.useLearned && config.learnedHeroes.isNotEmpty() -> {
+                val learned = config.learnedHeroes.filter { it.length in 3..20 }.shuffled().take(2)
+                (extractedHeroes + learned).distinct().take(3).ifEmpty { extractedHeroes }
+            }
+            else -> extractedHeroes
+        }
+
+        val mainHero = heroes.firstOrNull() ?: "Герой"
+        val heroGender = detectGender(mainHero)
 
         // Заголовок
         val title = if (config.bookTitle.isNotBlank()) {
@@ -242,43 +170,35 @@ object StoryGenerator {
             generateTitle(original, keywords, config.genre)
         }
 
-        // Строим текст
+        // === ГЕНЕРАЦИЯ ПРОДОЛЖЕНИЯ ===
         val sb = StringBuilder()
         sb.append(original)
         sb.append("\n\n")
 
-        // Мостик — плавный переход от оригинала к продолжению
-        sb.append(buildBridge(mainHero, secondHero, setting, timeOfDay, mainKeyword, profile, config.genre))
-        sb.append("\n\n")
-
-        // Генерируем сюжетные сцены
-        val scenes = buildScenes(config.pages, config.genre, profile, mainHero, secondHero, setting, timeOfDay, mainKeyword, secondKeyword, keywords)
-
-        var currentPage = 1
-        var charsSincePageStart = 0
-
-        for (scene in scenes) {
-            // Проверяем, нужно ли начать новую страницу
-            if (charsSincePageStart > CHARS_PER_PAGE - 200 && currentPage < config.pages) {
-                currentPage++
-                sb.append("\n\n— — — Страница $currentPage — — —\n\n")
-                charsSincePageStart = 0
-            }
-
-            val sceneText = renderScene(scene, mainHero, secondHero, setting, timeOfDay, mainKeyword, secondKeyword, profile, config.style)
-            sb.append(sceneText)
-            sb.append("\n\n")
-            charsSincePageStart += sceneText.length
-
-            if (sb.length >= targetChars) break
+        if (config.useLearned) {
+            // v35: основа текста — РЕАЛЬНЫЕ предложения изученных книг (learnedTemplates),
+            // короткие коннекторы ("тем временем", "вдруг") служат связками между ними
+            val continuation = generateFromLearned(
+                keywords = keywords,
+                templates = config.learnedTemplates,
+                connectors = config.learnedPhrases.filter { it.split(Regex("\\s+")).size in 1..3 },
+                targetChars = targetChars - original.length,
+                hero = mainHero,
+                heroGender = heroGender,
+                rng = Random(original.hashCode() + System.nanoTime().toInt())
+            )
+            sb.append(continuation ?: generateMinimalContinuation(original, keywords, mainHero, heroGender))
+        } else {
+            // Минимальное продолжение если изучение отключено
+            sb.append(generateMinimalContinuation(original, keywords, mainHero, heroGender))
         }
 
         // Концовка
-        sb.append(buildEnding(mainHero, secondHero, setting, mainKeyword, profile, config.authorName))
+        sb.append("\n\n— Конец —\n")
 
         // Форматируем
         var finalText = sb.toString()
-        finalText = smoothText(finalText)
+        finalText = formatText(finalText)
 
         val actualPages = (finalText.length + CHARS_PER_PAGE - 1) / CHARS_PER_PAGE
 
@@ -287,231 +207,255 @@ object StoryGenerator {
             fullText = finalText,
             chars = finalText.length,
             pages = actualPages,
-            heroes = characters.map { it.name },
+            heroes = heroes,
             keywords = keywords,
             correctedOriginal = original
         )
     }
 
-    // === СЦЕНА ===
-    data class Scene(
-        val type: String,     // "setting", "action", "dialogue", "thought", "conflict", "climax", "resolution"
-        val focus: String     // на чём фокус сцены
-    )
+    // === ГЕНЕРАЦИЯ ИЗ РЕАЛЬНЫХ ИЗУЧЕННЫХ ФРАЗ ===
+    /**
+     * Генерация из РЕАЛЬНЫХ предложений изученных книг.
+     *
+     * @param templates настоящие литературные предложения (learnedTemplates, 30-250 симв.)
+     * @param connectors короткие связки ("тем временем", "вдруг", "однако") — learnedPhrases
+     * @return текст продолжения или null, если нет подходящего материала
+     */
+    private fun generateFromLearned(
+        keywords: List<String>,
+        templates: List<String>,
+        connectors: List<String>,
+        targetChars: Int,
+        hero: String,
+        heroGender: String,
+        rng: Random
+    ): String? {
+        val sb = StringBuilder()
+        var currentChars = 0
+        var lastKeywords = keywords.take(5).toSet()
+        val usedPhrases = mutableSetOf<String>()
 
-    private fun buildScenes(
-        pages: Int,
-        genre: String,
-        profile: TextProfile,
-        mainHero: Character,
-        secondHero: Character?,
-        setting: String,
-        timeOfDay: String,
-        mainKeyword: String,
-        secondKeyword: String,
-        keywords: List<String>
-    ): List<Scene> {
-        val scenes = mutableListOf<Scene>()
-        val totalScenes = pages * 3 // примерно 3 сцены на страницу
+        // Фильтр качества: только полноценные литературные предложения
+        val validPhrases = templates.filter { phrase ->
+            phrase.length in 40..400 &&
+            phrase.count { it.isLetter() } > phrase.length * 0.55 &&
+            phrase.split(Regex("\\s+")).size in 4..40 &&
+            !phrase.contains("http") && !phrase.contains("@") && !phrase.contains("�") &&
+            phrase.contains(Regex("[А-Яа-яЁё]"))
+        }.distinct()
 
-        // Завязка (20%)
-        val introCount = maxOf(1, totalScenes / 5)
-        scenes.add(Scene("setting", "атмосфера и обстановка"))
-        scenes.add(Scene("action", "${mainHero.name} приходит в действие"))
-        if (secondHero != null) {
-            scenes.add(Scene("action", "появление второго персонажа"))
+        if (validPhrases.isEmpty()) return null
+
+        // Слова, с которых безопасно начинать предложение после коннектора
+        // (строчная буква); имена и незнакомые слова оставляем с заглавной
+        val lowercaseSafe = setOf(
+            "она", "он", "они", "оно", "мы", "вы", "я", "ты", "все", "всё", "это",
+            "этот", "эта", "тот", "в", "на", "за", "по", "у", "но", "а", "и",
+            "никто", "ничто", "вдруг", "тут", "затем", "потом", "однако", "казалось",
+            "оказалось", "наконец", "сначала", "поток", "день", "ночь", "утро", "вечер"
+        )
+
+        // Собираем абзацы по 3-5 предложений, связанных по ключевым словам
+        val paragraph = mutableListOf<String>()
+        var attempts = 0
+
+        fun flushParagraph() {
+            if (paragraph.isEmpty()) return
+            sb.append(paragraph.joinToString(" "))
+            sb.append("\n\n")
+            paragraph.clear()
         }
 
-        // Развитие (50%)
-        val devCount = maxOf(1, totalScenes / 2)
-        repeat(devCount) { i ->
-            when (i % 4) {
-                0 -> scenes.add(Scene("action", "действие ${mainHero.name}"))
-                1 -> if (secondHero != null) scenes.add(Scene("dialogue", "разговор"))
-                2 -> scenes.add(Scene("thought", "размышление ${mainHero.name}"))
-                3 -> scenes.add(Scene("action", "новое событие"))
+        while (currentChars < targetChars && attempts < validPhrases.size * 4) {
+            attempts++
+
+            // Приоритет: фраза, связанная по смыслу с предыдущей
+            val candidate = selectNextPhrase(validPhrases, lastKeywords, usedPhrases, rng)
+                ?: validPhrases.filter { it !in usedPhrases }.randomOrNull(rng)
+
+            if (candidate == null) {
+                usedPhrases.clear()
+                continue
+            }
+
+            usedPhrases.add(candidate)
+            lastKeywords = extractKeywordsFromPhrase(candidate).take(5).toSet()
+            var adapted = adaptPhrase(candidate, hero, heroGender)
+
+            // Связка-коннектор в начале нового абзаца (35% случаев)
+            if (paragraph.isEmpty() && sb.isNotBlank() && rng.nextDouble() < 0.35 && connectors.isNotEmpty()) {
+                val conn = connectors.random(rng).replaceFirstChar { it.uppercase() }
+                val firstWord = adapted.split(Regex("[\\s,.!?]+")).firstOrNull()?.lowercase() ?: ""
+                val lowered = if (firstWord in lowercaseSafe) {
+                    adapted.replaceFirstChar { it.lowercase() }
+                } else adapted
+                adapted = if (conn.endsWith(",") || conn.endsWith(".") || conn.endsWith("!") || conn.endsWith("?")) {
+                    "$conn $lowered"
+                } else {
+                    "$conn, $lowered"
+                }
+            }
+
+            paragraph.add(adapted)
+            currentChars += adapted.length + 1
+
+            // Закрываем абзац
+            if (paragraph.size >= listOf(3, 4, 5).random(rng)) {
+                flushParagraph()
+            }
+
+            // Контроль повторов
+            if (usedPhrases.size > validPhrases.size * 0.8) {
+                usedPhrases.clear()
             }
         }
 
-        // Кульминация (20%)
-        scenes.add(Scene("conflict", "напряжение нарастает"))
-        scenes.add(Scene("climax", "решающий момент"))
+        flushParagraph()
 
-        // Развязка (10%)
-        scenes.add(Scene("resolution", "итоги"))
-
-        return scenes
+        return if (sb.isBlank()) null else sb.toString()
     }
 
-    private fun renderScene(
-        scene: Scene,
-        mainHero: Character,
-        secondHero: Character?,
-        setting: String,
-        timeOfDay: String,
-        mainKeyword: String,
-        secondKeyword: String,
-        profile: TextProfile,
-        style: String
+    // === ВЫБОР СЛЕДУЮЩЕЙ ФРАЗЫ ПО КЛЮЧЕВЫМ СЛОВАМ ===
+    private fun selectNextPhrase(
+        phrases: List<String>,
+        currentKeywords: Set<String>,
+        usedPhrases: Set<String>,
+        rng: Random
+    ): String? {
+        if (currentKeywords.isEmpty()) return null
+
+        // Ищем фразы, содержащие хотя бы одно из текущих ключевых слов
+        val candidates = phrases.filter { phrase ->
+            phrase !in usedPhrases &&
+            currentKeywords.any { kw -> phrase.lowercase().contains(kw) }
+        }
+
+        return if (candidates.isNotEmpty()) {
+            // Выбираем по релевантности (больше совпадений = выше приоритет)
+            candidates.maxByOrNull { phrase ->
+                currentKeywords.count { kw -> phrase.lowercase().contains(kw) }
+            } ?: candidates.random(rng)
+        } else null
+    }
+
+    // === АДАПТАЦИЯ ФРАЗЫ: замена имён и рода глаголов ===
+    private fun adaptPhrase(phrase: String, hero: String, heroGender: String): String {
+        var result = phrase
+
+        // Заменяем распространённые имена на героя пользователя
+        val commonNames = listOf(
+            "Анна", "Мария", "Елена", "Ольга", "Татьяна", "Наталья", "Юлия",
+            "Алексей", "Дмитрий", "Иван", "Сергей", "Андрей", "Михаил", "Виктор"
+        )
+        for (name in commonNames) {
+            result = result.replace(Regex("\\b$name\\b"), hero)
+        }
+
+        // Корректируем род глаголов
+        result = adjustVerbGender(result, heroGender)
+
+        return result
+    }
+
+    // === КОРРЕКТИРОВКА ГЛАГОЛОВ ПО РОДУ ===
+    private fun adjustVerbGender(text: String, gender: String): String {
+        if (gender == "f") {
+            // Мужской род → женский
+            var result = text
+            result = result.replace(Regex("\\b(пошёл|стоял|увидел|сказал|спросил|ответил|подумал|понял|вспомнил|вышел|вошёл|сел|лёг|встал|подошёл|остановился|обернулся|улыбнулся|задумался|замолчал|кивнул)\\b")) { match ->
+                when (match.value) {
+                    "пошёл" -> "пошла"
+                    "стоял" -> "стояла"
+                    "увидел" -> "увидела"
+                    "сказал" -> "сказала"
+                    "спросил" -> "спросила"
+                    "ответил" -> "ответила"
+                    "подумал" -> "подумала"
+                    "понял" -> "поняла"
+                    "вспомнил" -> "вспомнила"
+                    "вышел" -> "вышла"
+                    "вошёл" -> "вошла"
+                    "сел" -> "села"
+                    "лёг" -> "легла"
+                    "встал" -> "встала"
+                    "подошёл" -> "подошла"
+                    "остановился" -> "остановилась"
+                    "обернулся" -> "обернулась"
+                    "улыбнулся" -> "улыбнулась"
+                    "задумался" -> "задумалась"
+                    "замолчал" -> "замолчала"
+                    "кивнул" -> "кивнула"
+                    else -> match.value + "а"
+                }
+            }
+            return result
+        }
+        return text
+    }
+
+    // === ИЗВЛЕЧЕНИЕ КЛЮЧЕВЫХ СЛОВ ИЗ ФРАЗЫ ===
+    private fun extractKeywordsFromPhrase(phrase: String): List<String> {
+        val words = phrase.lowercase()
+            .replace(Regex("[^а-яёa-z ]"), " ")
+            .split(Regex("\\s+"))
+            .filter { it.length in 4..15 }
+
+        val stopWords = setOf(
+            "который", "которая", "которые", "потому", "однако", "только", "очень",
+            "было", "была", "были", "будет", "можно", "нужно", "надо", "через",
+            "этот", "эта", "это", "тот", "та", "то", "весь", "вся", "всё", "все"
+        )
+
+        return words.filter { it !in stopWords }
+            .groupingBy { it }.eachCount()
+            .entries.sortedByDescending { it.value }
+            .map { it.key }
+    }
+
+    // === МИНИМАЛЬНОЕ ПРОДОЛЖЕНИЕ (если нет изученных фраз) ===
+    private fun generateMinimalContinuation(
+        original: String,
+        keywords: List<String>,
+        hero: String,
+        heroGender: String
     ): String {
-        return when (scene.type) {
-            "setting" -> renderSetting(mainHero, setting, timeOfDay, mainKeyword, profile)
-            "action" -> renderAction(mainHero, secondHero, setting, mainKeyword, profile)
-            "dialogue" -> renderDialogue(mainHero, secondHero, mainKeyword, secondKeyword, profile)
-            "thought" -> renderThought(mainHero, mainKeyword, secondKeyword, profile)
-            "conflict" -> renderConflict(mainHero, secondHero, setting, mainKeyword, profile)
-            "climax" -> renderClimax(mainHero, setting, mainKeyword, profile)
-            "resolution" -> renderResolution(mainHero, setting, mainKeyword, profile)
-            else -> renderAction(mainHero, secondHero, setting, mainKeyword, profile)
-        }.let { applyStyle(it, style) }
-    }
+        val keyword = keywords.firstOrNull() ?: "тайна"
+        val ending = if (heroGender == "f") "а" else ""
+        val stood = verbPast("стоял", heroGender)
+        val realized = verbPast("понял", heroGender)
+        val ponder = if (heroGender == "f") "размышляла" else "размышлял"
+        val pronoun = if (heroGender == "f") "Она" else "Он"
 
-    // === РЕНДЕР СЦЕН ПО ТИПАМ ===
-
-    private fun renderSetting(hero: Character, setting: String, timeOfDay: String, keyword: String, profile: TextProfile): String {
-        val endings = hero.verbPast("стоял")
-        val heroEnd = if (hero.gender == "f") "а" else ""
-        val moodDesc = when (profile.mood) {
-            "dramatic" -> "тревожно и напряжённо"
-            "philosophical" -> "тихо, словно мир затаил дыхание"
-            "light" -> "уютно и спокойно"
-            else -> "обычно, ничто не предвещало перемен"
-        }
-        return "$timeOfDay ${hero.name} $endings $setting. Вокруг было $moodDesc. В воздухе витало что-то, связанное с $keyword — ${hero.pronoun} ещё не мог$heroEnd это объяснить."
-    }
-
-    private fun renderAction(hero: Character, secondHero: Character?, setting: String, keyword: String, profile: TextProfile): String {
-        val actions = listOf(
-            "${hero.name} медленно ${hero.verbPast("пошёл")} вперёд, внимательно осматриваясь.",
-            "${hero.pronoun.capitalize()} ${hero.verbPast("остановился")} и прислушал${if (hero.gender == "f") "ась" else "ся"}.",
-            "${hero.name} ${hero.verbPast("оглядел")}ся по сторонам.",
-            "${hero.pronoun.capitalize()} ${hero.verbPast("сделал")} шаг и замер${if (hero.gender == "f") "а" else ""}.",
-            "${hero.name} ${hero.verbPast("подошёл")} ближе."
-        )
-
-        val reactions = listOf(
-            " Что-то изменилось.",
-            " ${hero.pronoun.capitalize()} чувствовал${if (hero.gender == "f") "а" else ""}, что $keyword близ${if (hero.gender == "f") "ка" else "ок"}.",
-            " Впереди было что-то важное.",
-            ""
-        )
-
-        return actions.random() + reactions.random()
-    }
-
-    private fun renderDialogue(hero: Character, secondHero: Character?, keyword: String, keyword2: String, profile: TextProfile): String {
-        val heroEnding = if (hero.gender == "f") "а" else ""
-        val secondEnding = if (secondHero?.gender == "f") "а" else ""
-
-        if (secondHero == null) {
-            val line = when (profile.mood) {
-                "dramatic" -> "Что-то здесь не так..."
-                "philosophical" -> "Зачем всё это?"
-                "light" -> "Ну что ж, посмотрим."
-                else -> "Надо разобраться."
+        return buildString {
+            append("$hero $stood и думал$ending о $keyword. ")
+            if (keywords.size > 1) {
+                append("Мысли снова и снова возвращались к слову «${keywords[1]}». ")
             }
-            return "— $line, — ${hero.verbPast("прошептал")} ${hero.name}."
+            append("Сначала всё казалось простым, но чем дольше $hero $ponder, тем больше вопросов возникало. ")
+            append("Ответ был где-то рядом — нужно было лишь решиться сделать первый шаг. ")
+            val pulledTogether = verbPast("взял", heroGender)
+            append("$pronoun $realized это и $pulledTogether себя в руки.")
         }
-
-        val dialogues = listOf(
-            "— Ты знаешь, о чём я думаю? — спросил$heroEnding ${hero.name}.\n" +
-            "— О $keyword? — ответил$secondEnding ${secondHero.name}. — Я тоже об этом.\n" +
-            "${hero.name} ${hero.verbPast("кивнул")}. — Тогда нам нужно действовать.",
-
-            "— ${secondHero.name}, ты ${secondHero.verbPast("заметил")} что-то странное? — ${hero.verbPast("спросил")} ${hero.name}.\n" +
-            "${secondHero.name} ${secondHero.verbPast("помолчал")}.\n" +
-            "— Да, — наконец произнёс$secondEnding ${secondHero.name}. — И мне это не нравится.",
-
-            "— Мы не можем больше молчать, — сказал$heroEnding ${hero.name}. — $keyword сам${if (hero.gender == "f") "а" else ""} по себе не разрешится.\n" +
-            "${secondHero.name} ${secondHero.verbPast("взглянул")} на ${hero.name}.\n" +
-            "— Ты прав${heroEnding}. Но с чего начнём?"
-        )
-
-        return dialogues.random()
     }
 
-    private fun renderThought(hero: Character, keyword: String, keyword2: String, profile: TextProfile): String {
-        val heroEnding = if (hero.gender == "f") "а" else ""
-        val followUp = when (profile.mood) {
-            "dramatic" -> "Страх сжимал ${hero.possessive} сердце."
-            "philosophical" -> "В чём смысл всего происходящего?"
-            "light" -> "Может, всё не так уж и плохо."
-            else -> "Нужно собраться с мыслями."
-        }
-
-        val thoughts = listOf(
-            "${hero.name} ${hero.verbPast("подумал")}, что всё это не случайно. $keyword и $keyword2 — они связаны, ${hero.pronoun} чувствовал$heroEnding это.",
-            "${hero.pronoun.capitalize()} ${hero.verbPast("вспомнил")} слова, сказанные давно. Может, в них и был ответ на вопрос о $keyword?",
-            "${hero.name} ${hero.verbPast("понял")}: ничего уже не будет прежним. И это пугало$heroEnding больше всего.",
-            "${hero.pronoun.capitalize()} ${hero.verbPast("задумался")}. $followUp"
-        )
-        return thoughts.random()
-    }
-
-    private fun renderConflict(hero: Character, secondHero: Character?, setting: String, keyword: String, profile: TextProfile): String {
-        val conflicts = listOf(
-            "Вдруг всё изменилось. ${hero.name} ${hero.verbPast("увидел")} то, чего не ожидал${if (hero.gender == "f") "а" else ""}. $keyword — это было серьезнее, чем ${hero.pronoun} думал${if (hero.gender == "f") "а" else ""}.",
-            "Что-то пошло не так. ${hero.name} ${hero.verbPast("почувствовал")} опасность. Нужно было решать — сейчас.",
-            if (secondHero != null) {
-                "${secondHero.name} ${secondHero.verbPast("сказал")} то, что перевернуло всё. ${hero.name} ${hero.verbPast("не мог")} поверить своим ушам."
-            } else {
-                "${hero.name} ${hero.verbPast("остался")} ${if (hero.gender == "f") "ась" else "ся"} один на один с проблемой. Выхода, казалось, не было."
+    private fun verbPast(base: String, gender: String): String {
+        return if (gender == "f") {
+            when (base) {
+                "пошёл" -> "пошла"
+                "стоял" -> "стояла"
+                "увидел" -> "увидела"
+                "сказал" -> "сказала"
+                "спросил" -> "спросила"
+                "ответил" -> "ответила"
+                "подумал" -> "подумала"
+                "понял" -> "поняла"
+                "вспомнил" -> "вспомнила"
+                else -> base + "а"
             }
-        )
-        return conflicts.random()
+        } else base
     }
 
-    private fun renderClimax(hero: Character, setting: String, keyword: String, profile: TextProfile): String {
-        val climaxes = listOf(
-            "И тогда ${hero.name} ${hero.verbPast("решил")}. ${hero.pronoun.capitalize()} ${hero.verbPast("сделал")} то, что должен${if (hero.gender == "f") "а" else ""} был. Всё или ничего.",
-            "Наступил момент истины. ${hero.name} ${hero.verbPast("взглянул")} вперёд — и ${hero.verbPast("пошёл")} навстречу $keyword.",
-            "${hero.pronoun.capitalize()} ${hero.verbPast("понял")}: именно для этого всё и происходило. Именно к этому ${hero.pronoun} шёл${if (hero.gender == "f") "а" else ""}."
-        )
-        return climaxes.random()
-    }
-
-    private fun renderResolution(hero: Character, setting: String, keyword: String, profile: TextProfile): String {
-        val resolutions = listOf(
-            "Всё закончилось. ${hero.name} ${hero.verbPast("выдохнул")}. $keyword — позади, но опыт останется навсегда.",
-            "${hero.name} ${hero.verbPast("оглядел")}ся. Мир стал другим — или это ${hero.pronoun} стал${if (hero.gender == "f") "а" else ""} другим?",
-            "История подходила к концу. Но ${hero.name} знал${if (hero.gender == "f") "а" else ""}: впереди ещё много всего."
-        )
-        return resolutions.random()
-    }
-
-    private fun applyStyle(text: String, style: String): String {
-        return when (style) {
-            "Лаконичный" -> {
-                val sentences = text.split(". ").take(3)
-                sentences.joinToString(". ") + "."
-            }
-            "Поэтический" -> text + " Свет ложился мягко, как будто мир тоже задумался."
-            "Драматичный" -> text + " Сердце билось где-то в горле."
-            "Ироничный" -> text + " Ну, классический поворот, ничего не скажешь."
-            else -> text
-        }
-    }
-
-    // === МОСТИК ===
-    private fun buildBridge(
-        hero: Character,
-        secondHero: Character?,
-        setting: String,
-        timeOfDay: String,
-        keyword: String,
-        profile: TextProfile,
-        genre: String
-    ): String {
-        return when (genre) {
-            "Детектив" -> "$timeOfDay ${hero.name} всё ещё думал${if (hero.gender == "f") "а" else ""} о случившемся. $setting хранил${if (setting.contains("а")) "а" else "о"} тайну, и ${hero.pronoun} был${if (hero.gender == "f") "а" else ""} на пороге разгадки."
-            "Роман" -> "$timeOfDay ${hero.name} ${hero.verbPast("вспомнил")} ту встречу. Сердце всё ещё билось чаще, когда ${hero.pronoun} думал${if (hero.gender == "f") "а" else ""} о $keyword."
-            "Фантастика" -> "$timeOfDay ${hero.name} смотрел${if (hero.gender == "f") "а" else ""} на $setting. $keyword манил${if (hero.gender == "f") "а" else ""}, как далёкая звезда."
-            "Философская проза" -> "$timeOfDay ${hero.name} ${hero.verbPast("задумался")}. $keyword — что это, как не отражение собственной души?"
-            else -> "$timeOfDay ${hero.name} ${hero.verbPast("стоял")} $setting и ${hero.verbPast("понял")}: всё только начинается. $keyword станет путеводной нитью."
-        }
-    }
-
-    // === ЗАГОЛОВОК ===
+    // === ГЕНЕРАЦИЯ ЗАГОЛОВКА ===
     private fun generateTitle(original: String, keywords: List<String>, genre: String): String {
         val key = keywords.firstOrNull()?.replaceFirstChar { it.uppercase() } ?: "Тишина"
         val key2 = keywords.getOrElse(1) { "судьба" }
@@ -529,46 +473,8 @@ object StoryGenerator {
         }
     }
 
-    // === КОНЦОВКА ===
-    private fun buildEnding(
-        hero: Character,
-        secondHero: Character?,
-        setting: String,
-        keyword: String,
-        profile: TextProfile,
-        authorName: String
-    ): String {
-        val author = if (authorName.isNotBlank()) authorName else "Автор"
-
-        val lastLines = if (profile.mood == "philosophical") {
-            "${hero.name} ${hero.verbPast("остановился")} $setting. ${hero.pronoun.capitalize()} ${hero.verbPast("понял")}: $keyword — это не конец, а лишь новая глава. Жизнь продолжается, и впереди ещё столько всего."
-        } else if (profile.mood == "dramatic") {
-            "${hero.name} ${hero.verbPast("выдохнул")}. Всё позади. $setting ${hero.verbPast("казался")} теперь другим — таким, каким ${hero.pronoun} ${hero.verbPast("видел")} его раньше. Но ${hero.pronoun} знал${if (hero.gender == "f") "а" else ""}: ничего уже не будет прежним."
-        } else {
-            "${hero.name} ${hero.verbPast("улыбнул")}ся. $keyword — это только начало. Впереди ${hero.possessive} ждёт новый путь, и ${hero.pronoun} готов${if (hero.gender == "f") "а" else ""} к нему."
-        }
-
-        return "\n\n$lastLines\n\n— Конец —\n\nСгенерировано в ZI Writer • $author"
-    }
-
-    // === ИЗВЛЕЧЕНИЕ КЛЮЧЕВЫХ СЛОВ ===
-    private fun extractKeywords(text: String): List<String> {
-        val words = text.lowercase().replace(Regex("[^а-яёa-z ]"), " ").split(Regex("\\s+")).filter { it.length > 3 }
-        val stopWords = setOf(
-            "который", "которая", "которые", "потому", "однако", "только", "очень", "сейчас",
-            "было", "была", "были", "будет", "можно", "нужно", "надо", "через", "между",
-            "этот", "эта", "это", "тот", "та", "то", "весь", "вся", "всё", "все", "всех",
-            "затем", "потом", "когда", "если", "тогда", "также", "поэтому"
-        )
-        val filtered = words.filter { it !in stopWords }
-        return filtered.groupingBy { it }.eachCount()
-            .entries.sortedByDescending { it.value }
-            .map { it.key }
-            .take(15)
-    }
-
     // === ФОРМАТИРОВАНИЕ ТЕКСТА ===
-    private fun smoothText(text: String): String {
+    private fun formatText(text: String): String {
         var result = text
         result = result.replace(Regex(" {2,}"), " ")
         result = result.replace(Regex("\n{3,}"), "\n\n")
