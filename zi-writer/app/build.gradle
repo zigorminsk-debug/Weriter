@@ -10,8 +10,8 @@ plugins {
 // Локально, если ничего не задано, используются значения по умолчанию.
 // Правило versionCode: major*10000 + minor*100 + patch (должен только расти!).
 // ---------------------------------------------------------------------------
-def ziVersionName = (project.findProperty('ziwriterVersionName') ?: System.getenv('ZIWRITER_VERSION_NAME') ?: '33.0').toString()
-def ziVersionCode = (project.findProperty('ziwriterVersionCode') ?: System.getenv('ZIWRITER_VERSION_CODE') ?: '3300').toString().toInteger()
+def ziVersionName = (project.findProperty('ziwriterVersionName') ?: System.getenv('ZIWRITER_VERSION_NAME') ?: '33.1').toString()
+def ziVersionCode = (project.findProperty('ziwriterVersionCode') ?: System.getenv('ZIWRITER_VERSION_CODE') ?: '330100').toString().toInteger()
 
 // ---------------------------------------------------------------------------
 // Подпись релиза.

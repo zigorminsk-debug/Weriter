@@ -241,3 +241,22 @@ jobs:
 - [Android DownloadManager](https://developer.android.com/reference/android/app/DownloadManager)
 - [FileProvider Guide](https://developer.android.com/reference/androidx/core/content/FileProvider)
 - [Request Install Packages](https://developer.android.com/reference/android/Manifest.permission#REQUEST_INSTALL_PACKAGES)
+
+
+## 🌐 Источники проверки обновлений (v33+)
+
+Приложение проверяет обновление по 4 источникам по очереди — если один недоступен
+(например, провайдер блокирует api.github.com), используется следующий:
+
+1. `api.github.com/repos/.../releases/latest` — официальный API (pre-release НЕ учитываются)
+2. `api.github.com/repos/.../releases?per_page=5` — список релизов (видит и pre-release)
+3. `raw.githubusercontent.com/.../main/RELEASE_INFO.json` — зеркало в репозитории
+4. `raw.githubusercontent.com/.../master/RELEASE_INFO.json` — то же, для старых репозиториев
+
+Файл `RELEASE_INFO.json` — это страховка на случай блокировки API GitHub:
+он содержит номер версии, описание и прямую ссылку на APK. CI обновляет его
+автоматически при каждом релизе (шаг «Обновление RELEASE_INFO.json» в workflow),
+вручную править его не нужно.
+
+Приложение показывает понятную причину сбоя проверки: блокировка провайдером
+(рекомендация VPN), отсутствие релизов или таймаут — вместо общего «нет интернета».

@@ -236,15 +236,21 @@ object StoryGenerator {
         val usedPhrases = mutableSetOf<String>()
 
         // Фильтр качества: только полноценные литературные предложения
+        // (начинаются с заглавной или тире — диалог; без мусора)
         val validPhrases = templates.filter { phrase ->
             phrase.length in 40..400 &&
             phrase.count { it.isLetter() } > phrase.length * 0.55 &&
             phrase.split(Regex("\\s+")).size in 4..40 &&
             !phrase.contains("http") && !phrase.contains("@") && !phrase.contains("�") &&
-            phrase.contains(Regex("[А-Яа-яЁё]"))
+            phrase.contains(Regex("[А-Яа-яЁё]")) &&
+            (phrase.first().isUpperCase() || phrase.first() == '—')
         }.distinct()
 
         if (validPhrases.isEmpty()) return null
+
+        // Защита от повторов: не начинаем соседние предложения одним и тем же словом
+        val recentFirstWords = ArrayDeque<String>()
+        fun firstWordOf(p: String): String = p.trim().split(Regex("\\s+")).firstOrNull()?.lowercase() ?: ""
 
         // Слова, с которых безопасно начинать предложение после коннектора
         // (строчная буква); имена и незнакомые слова оставляем с заглавной
@@ -258,6 +264,7 @@ object StoryGenerator {
         // Собираем абзацы по 3-5 предложений, связанных по ключевым словам
         val paragraph = mutableListOf<String>()
         var attempts = 0
+        var lastCandidate: String? = null // защита от двух одинаковых фраз подряд
 
         fun flushParagraph() {
             if (paragraph.isEmpty()) return
@@ -270,7 +277,7 @@ object StoryGenerator {
             attempts++
 
             // Приоритет: фраза, связанная по смыслу с предыдущей
-            val candidate = selectNextPhrase(validPhrases, lastKeywords, usedPhrases, rng)
+            var candidate = selectNextPhrase(validPhrases, lastKeywords, usedPhrases, rng)
                 ?: validPhrases.filter { it !in usedPhrases }.randomOrNull(rng)
 
             if (candidate == null) {
@@ -278,7 +285,22 @@ object StoryGenerator {
                 continue
             }
 
+            // Пытаемся избежать повтора первого слова соседних предложений
+            var retries = 0
+            while ((firstWordOf(candidate) in recentFirstWords || candidate == lastCandidate) && retries < 5) {
+                retries++
+                val alt = validPhrases
+                    .filter { it !in usedPhrases && firstWordOf(it) !in recentFirstWords && it != lastCandidate }
+                    .randomOrNull(rng) ?: break
+                candidate = alt
+            }
+
             usedPhrases.add(candidate)
+            lastCandidate = candidate
+            val fw = firstWordOf(candidate)
+            recentFirstWords.addLast(fw)
+            if (recentFirstWords.size > 3) recentFirstWords.removeFirst()
+
             lastKeywords = extractKeywordsFromPhrase(candidate).take(5).toSet()
             var adapted = adaptPhrase(candidate, hero, heroGender)
 
@@ -338,59 +360,204 @@ object StoryGenerator {
         } else null
     }
 
-    // === АДАПТАЦИЯ ФРАЗЫ: замена имён и рода глаголов ===
+    // === СКЛОНЕНИЕ ГЛАГОЛОВ ПО РОДУ (мужской ↔ женский) ===
+    private val verbGenderPairs = mapOf(
+        "пошёл" to "пошла", "пошел" to "пошла",
+        "вошёл" to "вошла", "вошел" to "вошла",
+        "вышел" to "вышла", "ушёл" to "ушла", "ушел" to "ушла",
+        "зашёл" to "зашла", "зашел" to "зашла",
+        "подошёл" to "подошла", "подошел" to "подошла",
+        "шёл" to "шла", "шел" to "шла",
+        "стоял" to "стояла", "сидел" to "сидела", "лежал" to "лежала",
+        "лёг" to "легла", "сел" to "села", "встал" to "встала",
+        "увидел" to "увидела", "сказал" to "сказала", "спросил" to "спросила",
+        "ответил" to "ответила", "подумал" to "подумала", "понял" to "поняла",
+        "вспомнил" to "вспомнила", "решил" to "решила", "начал" to "начала",
+        "продолжил" to "продолжила", "хотел" to "хотела", "мог" to "могла",
+        "смог" to "смогла", "ждал" to "ждала", "взял" to "взяла",
+        "отдал" to "отдала", "открыл" to "открыла", "закрыл" to "закрыла",
+        "заметил" to "заметила", "чувствовал" to "чувствовала",
+        "почувствовал" to "почувствовала", "говорил" to "говорила",
+        "промолчал" to "промолчала", "замолчал" to "замолчала",
+        "кивнул" to "кивнула", "улыбнулся" to "улыбнулась",
+        "усмехнулся" to "усмехнулась", "обернулся" to "обернулась",
+        "отвернулся" to "отвернулась", "остановился" to "остановилась",
+        "задумался" to "задумалась", "вздохнул" to "вздохнула",
+        "посмотрел" to "посмотрела", "крикнул" to "крикнула",
+        "шепнул" to "шепнула", "махнул" to "махнула", "держал" to "держала",
+        "исчез" to "исчезла", "появился" to "появилась", "вернулся" to "вернулась"
+    )
+
+    /**
+     * Возвращает глагол в нужном роде или null, если слово не глагол прошлого времени.
+     * Известные пары берутся из словаря, неизвестные — по эвристике -л/-ла.
+     */
+    private fun conjugateVerb(verbLower: String, targetGender: String): String? {
+        val isKnownMasculine = verbGenderPairs.containsKey(verbLower)
+        val isKnownFeminine = verbGenderPairs.containsValue(verbLower)
+
+        return when (targetGender) {
+            "f" -> when {
+                isKnownFeminine -> verbLower                                   // уже женская
+                isKnownMasculine -> verbGenderPairs[verbLower]                 // м → ж по словарю
+                verbLower.endsWith("л") -> verbLower + "а"                     // эвристика: поглядел → поглядела
+                else -> null
+            }
+            else -> when {
+                isKnownMasculine -> verbLower                                  // уже мужская
+                isKnownFeminine -> verbGenderPairs.entries.first { it.value == verbLower }.key // ж → м
+                verbLower.endsWith("ла") -> verbLower.dropLast(1)              // эвристика: поглядела → поглядел
+                else -> null
+            }
+        }
+    }
+
+    // Служебные слова, на которых согласование подлежащего НЕ прерывается
+    // (предлоги, союзы, наречия): "Анна медленно встала", "стоял у окна и смотрел"
+    private val agreementFunctionWords = setOf(
+        "и", "не", "бы", "же", "но", "а", "что", "как", "чтобы", "то", "ведь", "будто",
+        "в", "на", "у", "к", "с", "о", "об", "за", "по", "от", "до", "из", "под", "над",
+        "при", "без", "для", "уже", "ещё", "еще", "только", "даже", "почти", "снова",
+        "опять", "тут", "там", "теперь", "потом", "затем", "наконец", "вдруг",
+        "медленно", "быстро", "тихо", "громко", "молча", "вслух", "внимательно",
+        "осторожно", "резко", "плавно", "сразу", "долго"
+    )
+
+    private val punctuationChars = charOf(',', '.', '!', '?', ':', ';', '"', '\'', '«', '»', '—', '(', ')', '…')
+
+    /**
+     * Слово — известный глагол из словаря пар (в любой форме рода)
+     */
+    private fun isKnownVerb(lower: String): Boolean =
+        verbGenderPairs.containsKey(lower) || verbGenderPairs.containsValue(lower)
+
+    /**
+     * Согласует глаголы прошлого времени с ПОДЛЕЖАЩИМ.
+     *
+     * Конечный автомат:
+     * - активируется на подлежащем (имя героя / местоимение);
+     * - не гаснет на служебных словах и наречиях ("медленно встала");
+     * - однородные сказуемые через "и" даже после дополнений
+     *   ("взял письмо и перечитал", "стоял у окна и смотрел");
+     * - для словарных глаголов возобновление надёжно, для неизвестных —
+     *   только после служебного слова (не трогаем "свеча погасла");
+     * - гаснет на новом подлежащем — чужие фразы не изменяем.
+     */
+    private fun conjugateForSubject(text: String, subject: String, gender: String): String {
+        if (!text.contains(subject)) return text
+        val tokens = text.split(" ")
+        val out = StringBuilder()
+        var active = false        // текущее слово — наше подлежащее
+        var subjectSeen = false   // подлежащее уже встречалось во фразе
+        var resume = false        // ждём однородное сказуемое после "и"
+        var prev = ""             // предыдущее слово (для эвристики)
+
+        for (token in tokens) {
+            val core = token.trim(punctuationChars)
+            if (core == subject) {
+                active = true
+                subjectSeen = true
+                resume = false
+                out.append(token).append(' ')
+                prev = subject.lowercase()
+                continue
+            }
+            val lower = core.lowercase()
+
+            if (active) {
+                val fixed = conjugateVerb(lower, gender)
+                if (fixed != null) {
+                    out.append(token.replaceFirst(core, fixed)).append(' ')
+                    prev = fixed
+                    continue
+                }
+            }
+
+            if (resume) {
+                if (lower in agreementFunctionWords) {
+                    out.append(token).append(' ')
+                    prev = lower
+                    continue // "и внимательно перечитал"
+                }
+                val fixed = conjugateVerb(lower, gender)
+                if (fixed != null && (isKnownVerb(lower) || prev in agreementFunctionWords || isKnownVerb(prev))) {
+                    out.append(token.replaceFirst(core, fixed)).append(' ')
+                    prev = fixed
+                    continue
+                }
+                resume = false
+            }
+
+            if (lower == "и") {
+                resume = subjectSeen
+                out.append(token).append(' ')
+                prev = lower
+                continue
+            }
+
+            if (lower !in agreementFunctionWords) {
+                active = false
+            }
+            out.append(token).append(' ')
+            prev = lower
+        }
+        return out.toString().trimEnd()
+    }
+
+    /** Гарантирует точку в конце предложения (при изучении точки терялись при разбивке) */
+    private fun ensureSentenceEnd(s: String): String {
+        val t = s.trimEnd()
+        if (t.isEmpty()) return t
+        val last = t.last()
+        return when {
+            last == '.' || last == '!' || last == '?' || last == '…' -> t
+            last == ',' -> t.dropLast(1) + "."
+            else -> "$t."
+        }
+    }
+
+    // === АДАПТАЦИЯ ФРАЗЫ: замена имён + согласование рода ТОЛЬКО у героя ===
     private fun adaptPhrase(phrase: String, hero: String, heroGender: String): String {
         var result = phrase
 
+        // ВАЖНО: \b в Java-регулярках не работает с кириллицей (\w = латиница),
+        // поэтому границы слова — через lookaround по буквам
+        fun wordRegex(w: String) = Regex("(?<![А-Яа-яЁёA-Za-z])${Regex.escape(w)}(?![А-Яа-яЁёA-Za-z])")
+
+        // Замена местоимений на род героя (до склонения глаголов)
+        result = if (heroGender == "f") {
+            result.replace(wordRegex("Он"), "Она").replace(wordRegex("он"), "она")
+        } else {
+            result.replace(wordRegex("Она"), "Он").replace(wordRegex("она"), "он")
+        }
+
         // Заменяем распространённые имена на героя пользователя
+        // (только в именительном падеже; косвенные формы оставляем как в книге)
         val commonNames = listOf(
-            "Анна", "Мария", "Елена", "Ольга", "Татьяна", "Наталья", "Юлия",
-            "Алексей", "Дмитрий", "Иван", "Сергей", "Андрей", "Михаил", "Виктор"
+            "Анна", "Мария", "Марина", "Елена", "Ольга", "Татьяна", "Наталья", "Юлия",
+            "Ирина", "Оксана", "Галина", "Ксения", "Дарья", "Светлана", "Екатерина",
+            "Александра", "Валентина",
+            "Алексей", "Александр", "Дмитрий", "Иван", "Сергей", "Андрей", "Михаил",
+            "Виктор", "Игорь", "Николай", "Владимир", "Павел", "Роман", "Денис",
+            "Евгений", "Борис", "Григорий", "Кирилл", "Максим", "Артём", "Артем",
+            "Пётр", "Петр", "Фёдор", "Федор", "Константин"
         )
         for (name in commonNames) {
-            result = result.replace(Regex("\\b$name\\b"), hero)
+            result = result.replace(wordRegex(name), hero)
         }
 
-        // Корректируем род глаголов
-        result = adjustVerbGender(result, heroGender)
-
-        return result
-    }
-
-    // === КОРРЕКТИРОВКА ГЛАГОЛОВ ПО РОДУ ===
-    private fun adjustVerbGender(text: String, gender: String): String {
-        if (gender == "f") {
-            // Мужской род → женский
-            var result = text
-            result = result.replace(Regex("\\b(пошёл|стоял|увидел|сказал|спросил|ответил|подумал|понял|вспомнил|вышел|вошёл|сел|лёг|встал|подошёл|остановился|обернулся|улыбнулся|задумался|замолчал|кивнул)\\b")) { match ->
-                when (match.value) {
-                    "пошёл" -> "пошла"
-                    "стоял" -> "стояла"
-                    "увидел" -> "увидела"
-                    "сказал" -> "сказала"
-                    "спросил" -> "спросила"
-                    "ответил" -> "ответила"
-                    "подумал" -> "подумала"
-                    "понял" -> "поняла"
-                    "вспомнил" -> "вспомнила"
-                    "вышел" -> "вышла"
-                    "вошёл" -> "вошла"
-                    "сел" -> "села"
-                    "лёг" -> "легла"
-                    "встал" -> "встала"
-                    "подошёл" -> "подошла"
-                    "остановился" -> "остановилась"
-                    "обернулся" -> "обернулась"
-                    "улыбнулся" -> "улыбнулась"
-                    "задумался" -> "задумалась"
-                    "замолчал" -> "замолчала"
-                    "кивнул" -> "кивнула"
-                    else -> match.value + "а"
-                }
-            }
-            return result
+        // Согласуем глаголы только там, где подлежащее — герой (или местоимение).
+        // Остальной текст книги уже грамматически верен — его не трогаем.
+        result = conjugateForSubject(result, hero, heroGender)
+        if (heroGender == "f") {
+            result = conjugateForSubject(result, "Она", "f")
+            result = conjugateForSubject(result, "она", "f")
+        } else {
+            result = conjugateForSubject(result, "Он", "m")
+            result = conjugateForSubject(result, "он", "m")
         }
-        return text
+
+        return ensureSentenceEnd(result)
     }
 
     // === ИЗВЛЕЧЕНИЕ КЛЮЧЕВЫХ СЛОВ ИЗ ФРАЗЫ ===
@@ -482,6 +649,12 @@ object StoryGenerator {
         result = result.replace(Regex("\\s+([.!?,:;])"), "$1")
         result = result.replace(Regex("([.!?])([^\\s\\n])"), "$1 $2")
         result = result.replace(Regex(",([^\\s])"), ", $1")
+        // Запятая перед союзом в косвенной речи: "понял что" -> "понял, что"
+        // (в изученных предложениях пунктуация могла быть утеряна при извлечении)
+        result = result.replace(
+            Regex("(?i)(понял|поняла|решил|решила|сказал|сказала|думал|думала|знал|знала|видел|видела|чувствовал|чувствовала|заметил|заметила) (что|как|где|когда|чтобы|почему|зачем)"),
+            "$1, $2"
+        )
         return result.trim()
     }
 }
