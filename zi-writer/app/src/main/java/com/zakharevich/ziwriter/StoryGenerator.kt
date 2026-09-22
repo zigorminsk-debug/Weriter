@@ -285,24 +285,27 @@ object StoryGenerator {
                 continue
             }
 
-            // Пытаемся избежать повтора первого слова соседних предложений
+            // Пытаемся избежать повтора первого слова соседних предложений.
+            // current — non-null копия (Kotlin сбрасывает smart-cast var после
+            // переприсваивания внутри while)
+            var current: String = candidate
             var retries = 0
-            while ((firstWordOf(candidate) in recentFirstWords || candidate == lastCandidate) && retries < 5) {
+            while ((firstWordOf(current) in recentFirstWords || current == lastCandidate) && retries < 5) {
                 retries++
                 val alt = validPhrases
                     .filter { it !in usedPhrases && firstWordOf(it) !in recentFirstWords && it != lastCandidate }
                     .randomOrNull(rng) ?: break
-                candidate = alt
+                current = alt
             }
 
-            usedPhrases.add(candidate)
-            lastCandidate = candidate
-            val fw = firstWordOf(candidate)
+            usedPhrases.add(current)
+            lastCandidate = current
+            val fw = firstWordOf(current)
             recentFirstWords.addLast(fw)
             if (recentFirstWords.size > 3) recentFirstWords.removeFirst()
 
-            lastKeywords = extractKeywordsFromPhrase(candidate).take(5).toSet()
-            var adapted = adaptPhrase(candidate, hero, heroGender)
+            lastKeywords = extractKeywordsFromPhrase(current).take(5).toSet()
+            var adapted = adaptPhrase(current, hero, heroGender)
 
             // Связка-коннектор в начале нового абзаца (35% случаев)
             if (paragraph.isEmpty() && sb.isNotBlank() && rng.nextDouble() < 0.35 && connectors.isNotEmpty()) {
