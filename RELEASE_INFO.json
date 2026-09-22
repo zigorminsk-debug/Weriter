@@ -1,0 +1,8 @@
+{
+  "app": "ZI Writer",
+  "tag_name": "v33.1",
+  "version_name": "33.1",
+  "body": "## v33.1 — грамматика генератора\n\n- Согласование глаголов с героем (конечный автомат, однородные сказуемые)\n- Исправлен баг с \\`\\\\b\\` и кириллицей в регулярках Java\n- Замена местоимений, точки в конце предложений, защита от повторов\n- RELEASE_INFO.json обновляется CI автоматически",
+  "published_at": "2026-09-22T14:57:20Z",
+  "apk_url": "https://github.com/zigorminsk-debug/Weriter/releases/download/v33.1/ZI-Writer-v33.1.apk"
+}
