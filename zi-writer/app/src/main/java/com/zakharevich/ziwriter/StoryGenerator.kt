@@ -423,7 +423,7 @@ object StoryGenerator {
         "осторожно", "резко", "плавно", "сразу", "долго"
     )
 
-    private val punctuationChars = charOf(',', '.', '!', '?', ':', ';', '"', '\'', '«', '»', '—', '(', ')', '…')
+    private val punctuationChars = charArrayOf(',', '.', '!', '?', ':', ';', '"', '\'', '«', '»', '—', '(', ')', '…')
 
     /**
      * Слово — известный глагол из словаря пар (в любой форме рода)
@@ -453,7 +453,7 @@ object StoryGenerator {
         var prev = ""             // предыдущее слово (для эвристики)
 
         for (token in tokens) {
-            val core = token.trim(punctuationChars)
+            val core = token.trim(*punctuationChars)
             if (core == subject) {
                 active = true
                 subjectSeen = true
