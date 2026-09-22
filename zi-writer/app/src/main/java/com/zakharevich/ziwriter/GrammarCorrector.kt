@@ -60,7 +60,9 @@ object GrammarCorrector {
         result = result.replace(Regex("\\s+\\?"), "?")
         result = result.replace(Regex("\\s+:"), ":")
         result = result.replace(Regex("\\s+;"), ";")
-        result = result.replace(Regex(",([^\\s])"), ", $1")
+        // Добавляем пробел после запятой, но НЕ перед тире диалога (—),
+        // чтобы оформление прямой речи не ломалось.
+        result = result.replace(Regex(",([^\\s—])"), ", $1")
         result = result.replace(Regex("\\.([^\\s\\d])"), ". $1")
         result = result.replace(Regex(" {2,}"), " ")
         result = result.replace(Regex("\\n{3,}"), "\n\n")

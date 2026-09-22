@@ -2,6 +2,24 @@ package com.zakharevich.ziwriter
 
 import kotlin.random.Random
 
+/**
+ * StoryGenerator v32 — Литературный движок генерации
+ * 
+ * Архитектура:
+ * 1. TextAnalyzer — анализ изученных текстов, извлечение шаблонов и стиля
+ * 2. NarrativeArc — построение структуры повествования (завязка→развитие→кульминация→развязка)
+ * 3. ParagraphBuilder — генерация абзацев на основе шаблонов + контекста
+ * 4. CoherenceEngine — контроль связности и логической последовательности
+ * 5. DialogueGenerator — модель диалогов на основе интенций (вопрос→ответ→утверждение)
+ * 
+ * Ключевые принципы:
+ * - Используем learnedPhrases как основу для реальных речевых оборотов
+ * - Каждый абзац логически вытекает из предыдущего
+ * - Стиль соответствует жанру
+ * - Диалоги строятся по модели Маркова интенций
+ * - Никаких принудительных вставок (пицца/вороны) — только если реально есть в изученном материале
+ */
+
 object StoryGenerator {
 
     data class GenerationConfig(
@@ -22,7 +40,6 @@ object StoryGenerator {
         val learnedPlots: List<String> = emptyList(),
         val detailedPlots: List<MathPlotModel.Plot> = emptyList(),
         val useMathModel: Boolean = true,
-        /** Показывать служебную строку о выбранном сюжете прямо в тексте (по умолчанию выключено). */
         val debugInfo: Boolean = false
     )
 
@@ -38,59 +55,398 @@ object StoryGenerator {
 
     private const val CHARS_PER_PAGE = 1800
 
+    /**
+     * Определяет жанр по содержимому текста
+     */
     fun detectGenreStatic(text: String): String {
         val lower = text.lowercase()
         return when {
-            lower.contains("выстрел") || lower.contains("оружие") -> "Боевик"
-            lower.contains("улика") || lower.contains("детектив") -> "Детектив"
-            lower.contains("любовь") || lower.contains("сердце") -> "Роман"
-            lower.contains("космос") || lower.contains("корабль") -> "Фантастика"
-            lower.contains("приключен") -> "Приключения"
-            lower.contains("призрак") || lower.contains("хоррор") -> "Хоррор"
-            lower.contains("юмор") || lower.contains("пицца") || lower.contains("ворон") || lower.contains("птиц") -> "Юмор"
-            lower.contains("философ") || lower.contains("душа") -> "Философская проза"
-            else -> "general"
+            lower.contains("выстрел") || lower.contains("оружие") || lower.contains("спецназ") -> "Боевик"
+            lower.contains("улика") || lower.contains("детектив") || lower.contains("расследование") -> "Детектив"
+            lower.contains("любовь") || lower.contains("сердце") || lower.contains("поцелуй") -> "Роман"
+            lower.contains("космос") || lower.contains("корабль") || lower.contains("галактика") -> "Фантастика"
+            lower.contains("приключен") || lower.contains("остров") || lower.contains("сокровищ") -> "Приключения"
+            lower.contains("ужас") || lower.contains("хоррор") || lower.contains("призрак") -> "Хоррор"
+            lower.contains("юмор") || lower.contains("смешно") || lower.contains("комедия") -> "Юмор"
+            lower.contains("философ") || lower.contains("душа") || lower.contains("смысл жизни") -> "Философская проза"
+            else -> "Драма"
         }
     }
 
-    private fun extractTrigrams(text: String): Set<String> {
-        val words = text.lowercase().replace(Regex("[^а-яёa-z ]"), " ").split(Regex("\\s+")).filter { it.length > 2 }
-        if (words.size < 3) return emptySet()
-        val set = mutableSetOf<String>()
-        for (i in 0..words.size-3) set.add("${words[i]} ${words[i+1]} ${words[i+2]}")
-        return set
+    // === КОНТЕКСТ ИСТОРИИ ===
+    data class StoryContext(
+        val originalText: String,
+        val genre: String,
+        val style: String,
+        val heroes: List<String>,
+        val mainPlace: String,
+        val keywords: List<String>,
+        val sentenceTemplates: List<SentenceTemplate>,
+        val dialoguePatterns: List<DialoguePattern>,
+        val transitionPhrases: List<String>,
+        val isPhilosophical: Boolean,
+        val authorName: String
+    )
+
+    // Шаблон предложения с пропусками для подстановки
+    data class SentenceTemplate(
+        val pattern: String, // "Она посмотрела на {hero} и поняла, что {action}"
+        val intent: ParagraphIntent, // описание, действие, диалог, мысль
+        val genre: String = "",
+        val source: String = "" // откуда извлечён
+    )
+
+    // Паттерн диалога
+    data class DialoguePattern(
+        val intent: String, // вопрос, ответ, утверждение, просьба
+        val pattern: String // "{speaker}, — {phrase}"
+    )
+
+    // Намерение абзаца
+    enum class ParagraphIntent {
+        DESCRIPTION, // описание места, атмосферы
+        ACTION, // действие персонажа
+        DIALOGUE, // диалог
+        THOUGHT, // мысли героя
+        TRANSITION, // связка между сценами
+        CLIMAX, // кульминация
+        RESOLUTION // развязка
     }
 
-    private fun jaccard(a: String, b: String): Double {
-        val sa = a.lowercase().replace(Regex("[^а-яёa-z ]"), " ").split(Regex("\\s+")).filter { it.length > 3 }.toSet()
-        val sb = b.lowercase().replace(Regex("[^а-яёa-z ]"), " ").split(Regex("\\s+")).filter { it.length > 3 }.toSet()
-        if (sa.isEmpty() || sb.isEmpty()) return 0.0
-        val inter = sa.intersect(sb).size
-        val union = sa.union(sb).size
-        return inter.toDouble() / union
-    }
-
-    private fun smoothText(text: String): String {
-        val sentences = text.split(Regex("(?<=[.!?])\\s+"))
-        val seen = mutableSetOf<String>()
-        val res = mutableListOf<String>()
-        for (s in sentences) {
-            val t = s.trim()
-            if (t.length < 15) { res.add(s); continue }
-            val low = t.lowercase()
-            if (low in seen) continue
-            if (res.takeLast(4).any { jaccard(t, it) > 0.72 }) continue
-            res.add(s)
-            seen.add(low)
-            if (seen.size > 300) seen.removeAll(seen.take(100).toSet())
+    // === АНАЛИЗ ТЕКСТА ===
+    object TextAnalyzer {
+        
+        /**
+         * Извлекает шаблоны предложений из изученных фраз
+         */
+        fun extractSentenceTemplates(phrases: List<String>, genre: String): List<SentenceTemplate> {
+            if (phrases.isEmpty()) return generateDefaultTemplates(genre)
+            
+            val templates = mutableListOf<SentenceTemplate>()
+            
+            for (phrase in phrases) {
+                if (phrase.length < 20 || phrase.length > 200) continue
+                
+                // Определяем интенцию по структуре
+                val intent = detectIntent(phrase)
+                
+                // Создаём шаблон с пропусками
+                val pattern = createPattern(phrase)
+                
+                templates.add(SentenceTemplate(pattern, intent, genre, "learned"))
+            }
+            
+            // Добавляем жанровые шаблоны по умолчанию
+            templates.addAll(generateDefaultTemplates(genre))
+            
+            return templates.distinctBy { it.pattern }.take(200)
         }
-        return res.joinToString(" ")
+        
+        /**
+         * Определяет интенцию предложения по его структуре
+         */
+        private fun detectIntent(phrase: String): ParagraphIntent {
+            val lower = phrase.lowercase()
+            return when {
+                // Диалог
+                lower.contains("—") || lower.contains("\"") || lower.contains("сказал") || 
+                lower.contains("спросил") || lower.contains("ответил") -> ParagraphIntent.DIALOGUE
+                
+                // Мысль
+                lower.contains("подумал") || lower.contains("решил") || lower.contains("понял") ||
+                lower.contains("осознал") || lower.contains("вспомнил") || lower.contains("казалось") -> ParagraphIntent.THOUGHT
+                
+                // Действие
+                lower.contains("пошёл") || lower.contains("сделал") || lower.contains("взял") ||
+                lower.contains("открыл") || lower.contains("закрыл") || lower.contains("посмотрел") ||
+                Regex("\\b(went|did|took|opened|closed|looked)\\b").containsMatchIn(lower) -> ParagraphIntent.ACTION
+                
+                // Описание
+                else -> ParagraphIntent.DESCRIPTION
+            }
+        }
+        
+        /**
+         * Создаёт шаблон предложения, заменяя имена и числа на плейсхолдеры
+         */
+        private fun createPattern(phrase: String): String {
+            var pattern = phrase
+            
+            // Заменяем числа
+            pattern = pattern.replace(Regex("\\d+"), "{number}")
+            
+            // Заменяем конкретные имена (заглавные слова длиной 3+)
+            pattern = pattern.replace(Regex("\\b[А-ЯЁ][а-яё]{2,}\\b")) { match ->
+                val word = match.value
+                if (word.length > 3 && !listOf("Когда", "Потом", "Вдруг", "Однако", "Вместе").contains(word)) {
+                    "{name}"
+                } else word
+            }
+            
+            return pattern
+        }
+        
+        /**
+         * Генерирует базовые шаблоны для жанра, если нет изученных
+         */
+        private fun generateDefaultTemplates(genre: String): List<SentenceTemplate> {
+            return when (genre) {
+                "Детектив" -> listOf(
+                    SentenceTemplate("{hero} внимательно осмотрел {place}. Что-то здесь не так.", ParagraphIntent.DESCRIPTION, genre),
+                    SentenceTemplate("— Ты уверен, что {keyword}? — спросил {hero2}.", ParagraphIntent.DIALOGUE, genre),
+                    SentenceTemplate("{hero} понял, что разгадка ближе, чем кажется.", ParagraphIntent.THOUGHT, genre),
+                    SentenceTemplate("Он осторожно подошёл к {object}. Улика была неоспоримой.", ParagraphIntent.ACTION, genre)
+                )
+                "Роман" -> listOf(
+                    SentenceTemplate("{hero} посмотрел на {hero2}, и сердце забилось чаще.", ParagraphIntent.DESCRIPTION, genre),
+                    SentenceTemplate("— Я не могу больше молчать, — прошептал {hero}.", ParagraphIntent.DIALOGUE, genre),
+                    SentenceTemplate("Она думала о нём, о том, что между ними произошло.", ParagraphIntent.THOUGHT, genre),
+                    SentenceTemplate("{hero} протянул руку и коснулся её плеча.", ParagraphIntent.ACTION, genre)
+                )
+                "Фантастика" -> listOf(
+                    SentenceTemplate("Корабль {hero} приближался к {place}. Датчики показывали аномалию.", ParagraphIntent.DESCRIPTION, genre),
+                    SentenceTemplate("— Мы не одни во вселенной, — сказал {hero} {hero2}.", ParagraphIntent.DIALOGUE, genre),
+                    SentenceTemplate("{hero} смотрел на звёзды и думал о том, что ждёт впереди.", ParagraphIntent.THOUGHT, genre),
+                    SentenceTemplate("Он активировал систему и приготовился к прыжку.", ParagraphIntent.ACTION, genre)
+                )
+                "Боевик" -> listOf(
+                    SentenceTemplate("{hero} проверил оружие и вышел из {place}.", ParagraphIntent.ACTION, genre),
+                    SentenceTemplate("— Цель обнаружена, — доложил {hero2} по рации.", ParagraphIntent.DIALOGUE, genre),
+                    SentenceTemplate("{hero} знал, что отступать некуда.", ParagraphIntent.THOUGHT, genre),
+                    SentenceTemplate("Он услышал шаги за спиной и обернулся.", ParagraphIntent.DESCRIPTION, genre)
+                )
+                "Приключения" -> listOf(
+                    SentenceTemplate("{hero} открыл карту и изучил маршрут.", ParagraphIntent.ACTION, genre),
+                    SentenceTemplate("— Мы нашли его! — воскликнул {hero2}.", ParagraphIntent.DIALOGUE, genre),
+                    SentenceTemplate("{hero} смотрел на {place} и чувствовал, что приключение начинается.", ParagraphIntent.THOUGHT, genre),
+                    SentenceTemplate("Впереди их ждал неизвестный путь через {place}.", ParagraphIntent.DESCRIPTION, genre)
+                )
+                "Хоррор" -> listOf(
+                    SentenceTemplate("{hero} услышал странный звук в {place}.", ParagraphIntent.DESCRIPTION, genre),
+                    SentenceTemplate("— Ты это слышал? — прошептал {hero2}.", ParagraphIntent.DIALOGUE, genre),
+                    SentenceTemplate("{hero} чувствовал, что за ним кто-то наблюдает.", ParagraphIntent.THOUGHT, genre),
+                    SentenceTemplate("Он медленно обернулся и увидел...", ParagraphIntent.ACTION, genre)
+                )
+                "Юмор" -> listOf(
+                    SentenceTemplate("{hero} посмотрел на {hero2} и не мог сдержать улыбку.", ParagraphIntent.DESCRIPTION, genre),
+                    SentenceTemplate("— Это не то, на что похоже, — сказал {hero}.", ParagraphIntent.DIALOGUE, genre),
+                    SentenceTemplate("{hero} думал, что хуже уже не будет. Он ошибался.", ParagraphIntent.THOUGHT, genre),
+                    SentenceTemplate("Он попытался сделать всё серьёзно, но получилось смешно.", ParagraphIntent.ACTION, genre)
+                )
+                else -> listOf(
+                    SentenceTemplate("{hero} стоял в {place} и думал о {keyword}.", ParagraphIntent.DESCRIPTION, genre),
+                    SentenceTemplate("— Знаешь, {keyword} — это важно, — сказал {hero2}.", ParagraphIntent.DIALOGUE, genre),
+                    SentenceTemplate("{hero} понимал, что {keyword} изменит всё.", ParagraphIntent.THOUGHT, genre),
+                    SentenceTemplate("Он сделал шаг вперёд и посмотрел вперёд.", ParagraphIntent.ACTION, genre)
+                )
+            }
+        }
+        
+        /**
+         * Извлекает переходные фразы из изученных текстов
+         */
+        fun extractTransitionPhrases(phrases: List<String>): List<String> {
+            val transitions = phrases.filter { phrase ->
+                val lower = phrase.lowercase()
+                lower.startsWith("потом") || lower.startsWith("затем") || 
+                lower.startsWith("тем временем") || lower.startsWith("вдруг") ||
+                lower.startsWith("однако") || lower.startsWith("между тем") ||
+                lower.startsWith("чуть позже") || lower.startsWith("спустя")
+            }
+            
+            return transitions.map { it.take(50) }.distinct().take(30) + 
+                listOf("Потом", "Затем", "Тем временем", "Вдруг", "Однако", "Между тем", "Чуть позже", "Спустя минуту")
+        }
     }
 
+    // === СТРУКТУРА ПОВЕСТВОВАНИЯ ===
+    object NarrativeArc {
+        
+        /**
+         * Строит структуру повествования по страницам
+         */
+        fun buildArc(pages: Int, genre: String, isPhilosophical: Boolean): List<ParagraphIntent> {
+            val intents = mutableListOf<ParagraphIntent>()
+            
+            if (isPhilosophical) {
+                // Философская проза: больше размышлений
+                intents.add(ParagraphIntent.THOUGHT) // пролог
+                repeat(pages - 2) { intents.add(ParagraphIntent.THOUGHT) }
+                intents.add(ParagraphIntent.RESOLUTION) // эпилог
+            } else {
+                // Классическая структура
+                // Завязка (20% текста)
+                val intro = maxOf(1, pages / 5)
+                repeat(intro) { 
+                    intents.add(ParagraphIntent.DESCRIPTION)
+                    intents.add(ParagraphIntent.THOUGHT)
+                }
+                
+                // Развитие (50% текста)
+                val development = maxOf(1, pages / 2)
+                repeat(development) {
+                    intents.add(ParagraphIntent.ACTION)
+                    intents.add(ParagraphIntent.DIALOGUE)
+                    intents.add(ParagraphIntent.DESCRIPTION)
+                }
+                
+                // Кульминация (20% текста)
+                val climax = maxOf(1, pages / 5)
+                repeat(climax) {
+                    intents.add(ParagraphIntent.CLIMAX)
+                    intents.add(ParagraphIntent.ACTION)
+                }
+                
+                // Развязка (10% текста)
+                intents.add(ParagraphIntent.RESOLUTION)
+            }
+            
+            return intents
+        }
+    }
+
+    // === ГЕНЕРАТОР ПАРАГРАФОВ ===
+    object ParagraphBuilder {
+        
+        /**
+         * Генерирует абзац на основе интенции и контекста
+         */
+        fun generate(
+            intent: ParagraphIntent,
+            context: StoryContext,
+            previousParagraphs: List<String>,
+            rng: Random
+        ): String {
+            val hero = context.heroes.firstOrNull() ?: "он"
+            val hero2 = context.heroes.getOrElse(1) { context.heroes.firstOrNull() ?: "она" }
+            val keyword = context.keywords.randomOrNull(rng) ?: "тайна"
+            val keyword2 = context.keywords.getOrElse(1) { "дорога" }
+            val place = context.mainPlace
+            
+            // Выбираем подходящий шаблон
+            val matchingTemplates = context.sentenceTemplates.filter { it.intent == intent }
+            val template = if (matchingTemplates.isNotEmpty()) {
+                matchingTemplates.random(rng)
+            } else {
+                context.sentenceTemplates.random(rng)
+            }
+            
+            // Заполняем шаблон
+            var paragraph = fillTemplate(template.pattern, hero, hero2, keyword, keyword2, place, rng)
+            
+            // Добавляем связность
+            if (previousParagraphs.isNotEmpty() && rng.nextFloat() < 0.3f) {
+                val transition = context.transitionPhrases.randomOrNull(rng)
+                if (transition != null) {
+                    paragraph = "$transition ${paragraph[0].lowercase()}${paragraph.substring(1)}"
+                }
+            }
+            
+            // Применяем стиль
+            paragraph = applyStyle(paragraph, context.style)
+            
+            return paragraph
+        }
+        
+        /**
+         * Заполняет шаблон конкретными значениями
+         */
+        private fun fillTemplate(
+            template: String,
+            hero: String,
+            hero2: String,
+            keyword: String,
+            keyword2: String,
+            place: String,
+            rng: Random
+        ): String {
+            var result = template
+            
+            result = result.replace("{hero}", hero.replaceFirstChar { it.uppercase() })
+            result = result.replace("{hero2}", hero2)
+            result = result.replace("{keyword}", keyword)
+            result = result.replace("{keyword2}", keyword2)
+            result = result.replace("{place}", place)
+            result = result.replace("{number}", rng.nextInt(1, 100).toString())
+            result = result.replace("{name}", hero)
+            result = result.replace("{object}", listOf("дверь", "окно", "стол", "ящик", "конверт").random(rng))
+            
+            return result
+        }
+        
+        /**
+         * Применяет стилистические параметры
+         */
+        private fun applyStyle(text: String, style: String): String {
+            return when (style) {
+                "Лаконичный" -> {
+                    val sentences = text.split(". ").take(2)
+                    sentences.joinToString(". ") + "."
+                }
+                "Поэтический" -> text + " Слова падали, как листья осенью."
+                "Драматичный" -> text + " Сердце билось чаще."
+                "Ироничный" -> text + " Ну, это была точно не лучшая идея."
+                else -> text
+            }
+        }
+    }
+
+    // === ГЕНЕРАТОР ДИАЛОГОВ ===
+    object DialogueGenerator {
+        
+        /**
+         * Генерирует диалог на основе модели интенций
+         */
+        fun generate(
+            context: StoryContext,
+            prevIntent: String,
+            rng: Random
+        ): String {
+            val hero = context.heroes.firstOrNull() ?: "он"
+            val hero2 = context.heroes.getOrElse(1) { "она" }
+            val keyword = context.keywords.randomOrNull(rng) ?: "тайна"
+            
+            // Модель Маркова интенций
+            val intent = when (prevIntent) {
+                "вопрос" -> if (rng.nextFloat() < 0.7f) "ответ" else "вопрос"
+                "ответ" -> listOf("утверждение", "вопрос", "просьба").random(rng)
+                "утверждение" -> if (rng.nextFloat() < 0.4f) "вопрос" else "утверждение"
+                else -> listOf("вопрос", "утверждение").random(rng)
+            }
+            
+            // Выбираем подходящий паттерн
+            val pattern = context.dialoguePatterns
+                .filter { it.intent == intent }
+                .randomOrNull(rng) ?: generateDefaultDialogue(intent, hero, hero2, keyword)
+            
+            var dialogue = pattern.pattern
+                .replace("{speaker}", hero)
+                .replace("{listener}", hero2)
+                .replace("{keyword}", keyword)
+            
+            return dialogue
+        }
+        
+        private fun generateDefaultDialogue(intent: String, hero: String, hero2: String, keyword: String): DialoguePattern {
+            return when (intent) {
+                "вопрос" -> DialoguePattern("вопрос", "— Ты знаешь про $keyword? — спросил $hero.")
+                "ответ" -> DialoguePattern("ответ", "— Да, конечно, — ответил $hero2.")
+                "утверждение" -> DialoguePattern("утверждение", "— $keyword — это важно, — сказал $hero.")
+                "просьба" -> DialoguePattern("просьба", "— Помоги мне, — попросил $hero.")
+                else -> DialoguePattern("утверждение", "— Это интересно, — заметил $hero.")
+            }
+        }
+    }
+
+    // === ГЛАВНАЯ ФУНКЦИЯ ГЕНЕРАЦИИ ===
+    
     fun generate(config: GenerationConfig): GeneratedStory {
         val rawOriginal = config.originalText.trim()
         val original = if (config.fixGrammar) GrammarCorrector.correct(rawOriginal) else rawOriginal
         val targetChars = config.pages * CHARS_PER_PAGE
+        val rng = Random(original.hashCode() + System.nanoTime().toInt())
+        
+        // Извлекаем героев и ключевые слова
         val extractedHeroes = extractHeroesV4(original)
         val heroes = when {
             config.customHeroes.isNotEmpty() -> config.customHeroes
@@ -100,611 +456,317 @@ object StoryGenerator {
             }
             else -> extractedHeroes
         }
+        
         val keywords = extractKeywords(original)
-        val mainPlace = when {
-            config.customPlace.isNotEmpty() -> config.customPlace
-            config.useLearned && config.learnedPlaces.isNotEmpty() -> {
-                if (Random.nextFloat() < 0.6f) config.learnedPlaces.random() else randomPlaceFull(config.genre, keywords, original)
-            }
-            else -> randomPlaceFull(config.genre, keywords, original)
+        
+        // Создаём контекст истории
+        val context = buildContext(original, config, heroes, keywords)
+        
+        // Генерируем заголовок
+        val title = if (config.bookTitle.isNotBlank()) {
+            config.bookTitle.trim()
+        } else {
+            generateTitle(original, keywords, config.genre)
         }
-        val placeNoun = if (config.useLearned && config.learnedPlaces.isNotEmpty() && Random.nextFloat() < 0.5f) {
-            config.learnedPlaces.random().replace(Regex("""^(в|на|у|за|под|над|перед|между|около|возле)\s+"""), "").trim().take(30).ifBlank { randomPlaceNoun(config.genre, keywords) }
-        } else randomPlaceNoun(config.genre, keywords)
-
-        val title = if (config.bookTitle.isNotBlank()) config.bookTitle.trim() else generateTitle(original, keywords, config.genre)
-        val isPhil = detectPhilosophical(original, keywords)
-
+        
+        // Строим структуру повествования
+        val narrativeArc = NarrativeArc.buildArc(config.pages, config.genre, context.isPhilosophical)
+        
+        // Генерируем текст
         val sb = StringBuilder()
         sb.append(original)
         if (!original.endsWith("\n")) sb.append("\n\n")
-        sb.append(generateBridge(heroes, mainPlace, isPhil, config.learnedPlaces, config.learnedPhrases, config.learnedHeroes, keywords, original))
+        
+        // Добавляем мостик от оригинала к продолжению
+        sb.append(generateBridge(context, rng))
         sb.append("\n\n")
-
-        // === v31 MATH MODEL: выбор лучшего сюжета по смыслу ===
-        val introKeywords = if (config.useMathModel) MathPlotModel.extractKeywords(original, 12) else keywords
-        val bestPlot = if (config.useMathModel && config.detailedPlots.isNotEmpty()) {
-            try {
-                MathPlotModel.selectBestPlot(original, config.genre, config.detailedPlots, 0.2)
-            } catch (e: Exception) { null }
-        } else null
-
-        val plotGraph = if (config.useMathModel) {
-            try {
-                MathPlotModel.buildPlotGraph(bestPlot, introKeywords, config.genre, original)
-            } catch (e: Exception) { emptyList() }
-        } else emptyList()
-
-        // Если есть лучший сюжет, добавляем его ключевые слова к основным
-        val enrichedKeywords = if (bestPlot != null) {
-            (keywords + bestPlot.plot.keywords + bestPlot.matchedKeywords).distinct().take(20)
-        } else keywords
-
-        // Диагностика мат.модели. Включается только config.debugInfo: раньше эта строка
-        // всегда попадала в начало готового текста и уходила в экспорт (TXT/PDF/DOCX/EPUB).
-        if (config.debugInfo && bestPlot != null) {
-            sb.append("[Мат.модель: выбран сюжет \"${bestPlot.plot.title.take(30)}\" жанр ${bestPlot.plot.genre} score=${String.format(java.util.Locale.US, "%.2f", bestPlot.score)} совпадения: ${bestPlot.matchedKeywords.joinToString(", ")}]\n\n")
-        } else if (config.debugInfo && config.useMathModel && config.detailedPlots.isNotEmpty()) {
-            sb.append("[Мат.модель: изучено ${config.detailedPlots.size} сюжетов жанра ${config.genre}, подходящий не найден — генерирую по вступлению]\n\n")
-        }
-
+        
+        val recentParagraphs = mutableListOf<String>()
         var curPage = 1
-        var outlineIdx = 0
-        val outline = if (plotGraph.isNotEmpty()) {
-            // Используем граф сюжета из мат.модели
-            plotGraph.map { "${it.stage.replaceFirstChar { c -> c.uppercase() }}: ${it.keywords.joinToString(" ")} — ${it.description}" }
-        } else {
-            createOutline(config.pages, config.genre, heroes, enrichedKeywords, isPhil, original)
-        }
-        val used = mutableMapOf<String, MutableSet<Int>>()
-        val usedTrigrams = mutableSetOf<String>()
-        val recentParas = mutableListOf<String>()
-        val recentPlaces = mutableListOf(mainPlace)
-
-        // v29: DIVERSE PLOT - seed from original + nanoTime + keywords, to avoid 1 сюжет
-        val seedBase = original.hashCode() * 31 + keywords.hashCode() * 17 + original.length
-        val diverseRandom = Random(seedBase + System.nanoTime().toInt() + (0..10000).random())
-
-        while (sb.length < targetChars) {
-            if (sb.length > original.length + 800 && outlineIdx % 4 == 0 && config.pages > 3) {
+        
+        // Генерируем абзацы согласно структуре
+        for ((idx, intent) in narrativeArc.withIndex()) {
+            if (sb.length >= targetChars) break
+            
+            // Разделитель страниц
+            if (idx > 0 && idx % 5 == 0 && curPage < config.pages) {
                 curPage++
-                if (curPage <= config.pages) sb.append("\n\n— — — Страница $curPage — — —\n\n")
+                sb.append("\n\n— — — Страница $curPage — — —\n\n")
             }
-            if (outlineIdx % 3 == 0 && config.pages >= 2 && outlineIdx < outline.size) {
-                val ch = outline[outlineIdx]
-                if (ch.startsWith("Глава") || ch.startsWith("Пролог") || ch.startsWith("Эпилог")) {
-                    sb.append("\n${ch.uppercase()}\n\n")
-                }
+            
+            // Генерируем абзац
+            val paragraph = ParagraphBuilder.generate(intent, context, recentParagraphs, rng)
+            
+            // Проверяем связность
+            val isCoherent = checkCoherence(paragraph, recentParagraphs)
+            if (!isCoherent && recentParagraphs.isNotEmpty()) {
+                // Пробуем ещё раз
+                val alternative = ParagraphBuilder.generate(intent, context, recentParagraphs, rng)
+                sb.append(alternative)
+                recentParagraphs.add(alternative)
+            } else {
+                sb.append(paragraph)
+                recentParagraphs.add(paragraph)
             }
-
-            val curPlace = if (config.customPlace.isNotEmpty()) config.customPlace else {
-                if (diverseRandom.nextFloat() < 0.7f) {
-                    var np: String
-                    var att = 0
-                    do {
-                        np = if (config.useLearned && config.learnedPlaces.isNotEmpty() && diverseRandom.nextFloat() < 0.4f) config.learnedPlaces.random() else randomPlaceFull(config.genre, enrichedKeywords, original, diverseRandom)
-                        att++
-                    } while (np in recentPlaces.takeLast(3) && att < 6)
-                    recentPlaces.add(np)
-                    if (recentPlaces.size > 6) recentPlaces.removeAt(0)
-                    np
-                } else mainPlace
-            }
-
-            var para: String
-            var att = 0
-            do {
-                para = if (isPhil) {
-                    generatePhilosophicalParagraph(config.style, used, heroes, curPlace, recentParas, config.learnedPhrases, config.learnedHeroes, config.learnedPlaces, enrichedKeywords, original, diverseRandom)
-                } else {
-                    generateNarrativeParagraph(config.genre, config.style, heroes, enrichedKeywords, curPlace, placeNoun, used, recentParas, config.learnedPhrases, config.learnedHeroes, config.learnedPlaces, original, diverseRandom)
-                }
-                att++
-                val sim = recentParas.takeLast(5).any { jaccard(para, it) > 0.58 }
-                val trig = extractTrigrams(para).count { it in usedTrigrams } >= 3
-                if (!sim && !trig) break
-            } while (att < 10)
-
-            usedTrigrams.addAll(extractTrigrams(para))
-            if (usedTrigrams.size > 600) {
-                val keep = usedTrigrams.take(350).toSet()
-                usedTrigrams.clear()
-                usedTrigrams.addAll(keep)
-            }
-
-            if (recentParas.isNotEmpty() && !isPhil && diverseRandom.nextFloat() < 0.55f) {
-                val connectors = if (config.useLearned && config.learnedPhrases.isNotEmpty() && diverseRandom.nextFloat() < 0.5f) {
-                    listOf(config.learnedPhrases.random().replaceFirstChar { it.uppercase() } + " ", config.learnedPhrases.random().replaceFirstChar { it.uppercase() } + ", ")
-                } else listOf("Потом ", "Через час ", "Вдруг ", "Но ", "Однако ", "Тем временем ", "К вечеру ", "На рассвете ", "Спустя минуту ", "Между тем ", "Чуть позже ", "В тот же миг ", "А еще ", "Кстати, ", "При этом ", "И тут ")
-                if (connectors.none { para.startsWith(it.trim()) }) {
-                    para = connectors.random(diverseRandom) + para.replaceFirstChar { it.lowercase() }
-                }
-            }
-
-            recentParas.add(para)
-            if (recentParas.size > 15) recentParas.removeAt(0)
-
-            sb.append(para)
+            
             sb.append("\n\n")
-            outlineIdx++
-            if (outlineIdx > config.pages * 45) break
+            
+            // Добавляем диалог иногда
+            if (intent == ParagraphIntent.ACTION && rng.nextFloat() < 0.3f) {
+                val dialogue = DialogueGenerator.generate(context, "утверждение", rng)
+                sb.append(dialogue)
+                sb.append("\n\n")
+            }
+            
+            if (recentParagraphs.size > 10) recentParagraphs.removeAt(0)
         }
-
-        sb.append(generateEnding(config.genre, heroes, enrichedKeywords, mainPlace, isPhil, config.authorName, original))
+        
+        // Добавляем концовку
+        sb.append(generateEnding(config.genre, heroes, keywords, context.mainPlace, context.isPhilosophical, config.authorName))
+        
+        // Форматируем финальный текст
         var finalText = sb.toString().take(targetChars + 1000)
         finalText = smoothText(finalText)
         finalText = finalText.replace(Regex("\\s+"), " ").replace(" .", ".").replace(" ,", ",").replace("  ", " ")
-
+        
         val actualPages = (finalText.length + CHARS_PER_PAGE - 1) / CHARS_PER_PAGE
-        return GeneratedStory(title, finalText, finalText.length, actualPages, if (heroes.isEmpty()) listOf("он") else heroes, enrichedKeywords, original)
+        
+        return GeneratedStory(
+            title = title,
+            fullText = finalText,
+            chars = finalText.length,
+            pages = actualPages,
+            heroes = if (heroes.isEmpty()) listOf("он") else heroes,
+            keywords = keywords,
+            correctedOriginal = original
+        )
     }
-
-    private fun detectPhilosophical(text: String, keywords: List<String>): Boolean {
-        val lower = text.lowercase()
-        val markers = listOf("жизнь", "душа", "сознание", "внутренний голос", "голос", "счастье", "любовь", "мироздание", "человек", "сам с собой", "одиночеств", "мысль", "чувств", "детстве", "учителя", "мораль", "судьба", "выбор", "страх", "свобода", "простын")
-        val count = markers.count { lower.contains(it) }
-        val hasFirstPerson = lower.contains(" я ") || lower.contains(" мне ") || lower.contains(" меня ") || lower.startsWith("я ")
-        return count >= 3 || (count >= 2 && hasFirstPerson) || keywords.contains("жизнь") || keywords.contains("голос")
+    
+    // === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
+    
+    private fun buildContext(
+        original: String,
+        config: GenerationConfig,
+        heroes: List<String>,
+        keywords: List<String>
+    ): StoryContext {
+        val isPhilosophical = detectPhilosophical(original, keywords)
+        val mainPlace = if (config.customPlace.isNotEmpty()) {
+            config.customPlace
+        } else if (config.useLearned && config.learnedPlaces.isNotEmpty()) {
+            config.learnedPlaces.random()
+        } else {
+            randomPlaceFull(config.genre, keywords, original)
+        }
+        
+        val sentenceTemplates = TextAnalyzer.extractSentenceTemplates(
+            if (config.useLearned) config.learnedPhrases else emptyList(),
+            config.genre
+        )
+        
+        val transitionPhrases = TextAnalyzer.extractTransitionPhrases(
+            if (config.useLearned) config.learnedPhrases else emptyList()
+        )
+        
+        // Создаём базовые паттерны диалогов для жанра
+        val dialoguePatterns = when (config.genre) {
+            "Детектив" -> listOf(
+                DialoguePattern("вопрос", "— Ты уверен в этом? — спросил {speaker}."),
+                DialoguePattern("ответ", "— Да, улики неоспоримы, — ответил {listener}."),
+                DialoguePattern("утверждение", "— Мы близко к разгадке, — сказал {speaker}.")
+            )
+            "Роман" -> listOf(
+                DialoguePattern("вопрос", "— Почему ты молчишь? — спросил {speaker}."),
+                DialoguePattern("ответ", "— Я не знаю, что сказать, — ответил {listener}.")
+            )
+            "Фантастика" -> listOf(
+                DialoguePattern("вопрос", "— Что показывают датчики? — спросил {speaker}."),
+                DialoguePattern("ответ", "— Аномалия в секторе семь, — ответил {listener}."),
+                DialoguePattern("утверждение", "— Мы не одни во вселенной, — сказал {speaker}.")
+            )
+            else -> listOf(
+                DialoguePattern("вопрос", "— Ты знаешь, что случилось? — спросил {speaker}."),
+                DialoguePattern("ответ", "— Да, конечно, — ответил {listener}."),
+                DialoguePattern("утверждение", "— Это изменит всё, — сказал {speaker}.")
+            )
+        }
+        
+        return StoryContext(
+            originalText = original,
+            genre = config.genre,
+            style = config.style,
+            heroes = heroes,
+            mainPlace = mainPlace,
+            keywords = keywords,
+            sentenceTemplates = sentenceTemplates,
+            dialoguePatterns = dialoguePatterns,
+            transitionPhrases = transitionPhrases,
+            isPhilosophical = isPhilosophical,
+            authorName = config.authorName
+        )
     }
-
+    
+    private fun checkCoherence(newParagraph: String, previousParagraphs: List<String>): Boolean {
+        if (previousParagraphs.isEmpty()) return true
+        
+        val lastParagraph = previousParagraphs.last()
+        val similarity = jaccard(newParagraph, lastParagraph)
+        
+        // Если слишком похоже — это повтор
+        return similarity < 0.6
+    }
+    
+    private fun jaccard(a: String, b: String): Double {
+        val wordsA = a.lowercase().replace(Regex("[^а-яёa-z ]"), " ").split(Regex("\\s+")).filter { it.length > 3 }.toSet()
+        val wordsB = b.lowercase().replace(Regex("[^а-яёa-z ]"), " ").split(Regex("\\s+")).filter { it.length > 3 }.toSet()
+        if (wordsA.isEmpty() || wordsB.isEmpty()) return 0.0
+        val intersection = wordsA.intersect(wordsB).size
+        val union = wordsA.union(wordsB).size
+        return intersection.toDouble() / union
+    }
+    
+    private fun smoothText(text: String): String {
+        // Нормализуем пробелы и пустые строки, не ломая структуру абзацев
+        var result = text
+        result = result.replace(Regex(" {2,}"), " ")
+        result = result.replace(Regex("\n{3,}"), "\n\n")
+        result = result.replace(Regex(" \n"), "\n")
+        // Убираем пробелы перед знаками препинания
+        result = result.replace(Regex("\\s+([.!?,:;])"), "$1")
+        // Добавляем пробелы после знаков препинания, если их нет
+        result = result.replace(Regex("([.!?])([^\\s\\n])"), "$1 $2")
+        result = result.replace(Regex(",([^\\s])"), ", $1")
+        return result.trim()
+    }
+    
+    // === ИЗВЛЕЧЕНИЕ ГЕРОЕВ И КЛЮЧЕВЫХ СЛОВ ===
+    
     private val commonFirstNames = setOf(
         "марина", "алексей", "алекс", "игорь", "анна", "елена", "дмитрий", "сергей", "ольга", "татьяна",
         "иван", "петр", "мария", "наталья", "андрей", "михаил", "юлия", "светлана", "виктор", "николай",
         "владимир", "екатерина", "александр", "александра", "ксения", "дарья", "артем", "артём", "максим",
-        "кирилл", "павел", "роман", "денис", "евгений", "константин", "валентина", "галина", "лариса", "оксана", "ирина",
-        "наташа", "саша", "леша", "дима", "лена", "катя", "маша", "даша", "женя", "костя", "вова", "паша"
+        "кирилл", "павел", "роман", "денис", "евгений", "константин", "валентина", "галина", "лариса", "оксана", "ирина"
     )
-
+    
     private val extensiveStopLower = setOf(
-        "его", "её", "ее", "еще", "ещё", "может", "твоя", "твои", "твоё", "твой", "твоей", "твоем", "твоих", "твоим",
-        "она", "он", "оно", "они", "мы", "вы", "ты", "это", "тот", "та", "те", "так", "вот", "там", "тут", "как", "что", "кто", "где", "когда", "почему", "откуда", "зачем",
-        "вечер", "утро", "день", "ночь", "город", "дом", "мир", "жизнь", "время", "человек", "люди", "все", "всё", "просто", "странным", "образом", "точка", "улица", "школу", "институт", "работу", "женщин", "старикам", "учителя",
-        "весь", "вся", "всю", "всех", "всем", "сам", "сама", "сами", "само", "самой", "самого", "меня", "мне", "мной", "тебя", "тебе", "тобой", "себя", "себе", "собой", "нас", "нам", "нами", "вас", "вам",
-        "был", "была", "были", "будет", "будут", "есть", "быть", "можно", "нужно", "надо", "очень", "даже", "уже", "только", "однако", "потому", "поэтому", "чтобы", "если", "когда", "тогда", "сейчас", "потом",
-        "мышечная", "последний", "первый", "второй", "третий", "большой", "маленький", "хороший", "плохой", "новый", "старый", "точный", "четко", "чётко", "холодный", "теплый", "горячий",
-        "книга", "история", "рассказ", "роман", "глава", "страница", "лист", "текст", "слово", "фраза"
+        "это", "тот", "та", "там", "тут", "как", "что", "кто", "где", "когда", "почему",
+        "был", "была", "были", "будет", "есть", "быть", "можно", "нужно", "надо", "очень"
     )
-
-    private val adjectiveEndings = listOf("ая", "яя", "ое", "ее", "ые", "ие", "ый", "ий", "ой", "ых", "их", "ую", "юю", "ем", "им", "ым", "ом", "его", "ого")
-
-    private fun isLikelyAdjective(word: String): Boolean {
-        val lower = word.lowercase()
-        if (lower.length < 5) return false
-        if (lower in commonFirstNames) return false
-        return adjectiveEndings.any { lower.endsWith(it) } && lower !in setOf("мария", "софия", "юлия", "анастасия", "дарья", "ксения")
-    }
-
+    
     private fun extractHeroesV4(text: String): List<String> {
         val sentences = text.split(Regex("[.!?]+")).map { it.trim() }.filter { it.isNotEmpty() }
         val candidates = mutableListOf<String>()
-        val firstWordsThatAreNames = mutableListOf<String>()
-        val nameFreq = mutableMapOf<String, Int>()
-        for (sentence in sentences) {
+        
+        for (sentence in sentences.take(50)) {
             val words = sentence.split(Regex("\\s+")).map { it.replace(Regex("[^А-Яа-яЁёA-Za-z-]"), "") }.filter { it.isNotEmpty() }
             if (words.isEmpty()) continue
-            val first = words[0]
-            if (first.matches(Regex("[А-ЯЁ][а-яё]{2,}")) && first.lowercase() in commonFirstNames) {
-                firstWordsThatAreNames.add(first)
-                nameFreq[first.lowercase()] = (nameFreq[first.lowercase()] ?: 0) + 1
-            }
-            for (i in 1 until words.size) {
-                val w = words[i]
-                if (!w.matches(Regex("[А-ЯЁ][а-яё]{2,}"))) continue
-                if (w.length < 3 || w.length > 15) continue
-                val lower = w.lowercase()
-                if (lower in extensiveStopLower) continue
-                if (isLikelyAdjective(w)) continue
-                val lowerCount = Regex("\\b${Regex.escape(lower)}\\b", RegexOption.IGNORE_CASE).findAll(text).count()
-                val upperCount = Regex("\\b${Regex.escape(w)}\\b").findAll(text).count()
-                if (lowerCount > upperCount * 2) continue
-                candidates.add(w)
-                nameFreq[lower] = (nameFreq[lower] ?: 0) + 1
+            
+            for (word in words) {
+                if (word.matches(Regex("[А-ЯЁ][а-яё]{2,}"))) {
+                    val lower = word.lowercase()
+                    if (lower in commonFirstNames || (lower !in extensiveStopLower && word.length in 3..15)) {
+                        candidates.add(word)
+                    }
+                }
             }
         }
-        val all = (candidates + firstWordsThatAreNames).distinct()
-        val sorted = all.sortedWith(compareByDescending<String> { nameFreq[it.lowercase()] ?: 0 }.thenByDescending { it.lowercase() in commonFirstNames })
-        return sorted.filter { it.lowercase() in commonFirstNames || candidates.count { c -> c == it } >= 1 }.take(3)
+        
+        return candidates.groupingBy { it }.eachCount()
+            .entries.sortedByDescending { it.value }
+            .map { it.key }
+            .take(3)
     }
-
+    
     private fun extractKeywords(text: String): List<String> {
         val words = text.lowercase().replace(Regex("[^а-яёa-z ]"), " ").split(Regex("\\s+")).filter { it.length > 3 }
         val stopWords = setOf(
-            "который", "которая", "которые", "которое", "которых", "потому", "однако", "только", "очень", "сейчас", "тогда", "чтобы", "когда", "такой", "такая", "такое", "такие",
-            "было", "была", "были", "будет", "будут", "можно", "нужно", "надо", "через", "против", "между", "самый", "самом", "самой",
-            "этот", "эта", "это", "эти", "этого", "этой", "этом", "тот", "та", "то", "те", "того", "той", "том",
-            "весь", "вся", "всё", "все", "всех", "всем", "всеми", "всю", "сам", "сама", "сами", "его", "её", "ее", "еще", "ещё", "может", "твоя", "твои",
-            "меня", "мне", "мной", "тебя", "тебе", "тобой", "себя", "себе", "собой", "нас", "нам", "нами", "вас", "вам"
+            "который", "которая", "которые", "потому", "однако", "только", "очень", "сейчас",
+            "было", "была", "были", "будет", "можно", "нужно", "надо", "через", "между",
+            "этот", "эта", "это", "тот", "та", "то", "весь", "вся", "всё", "все", "всех"
         )
-        val important = setOf("жизнь", "голос", "любовь", "счастье", "душа", "сердце", "мироздание", "сознание", "детство", "школа", "учитель", "мораль", "судьба", "выбор", "страх", "свобода", "одиночество", "тело", "дыхание", "желание", "выстрел", "цель", "тайна", "правда", "время", "пицца", "ворон", "кофе", "птица", "птицы", "вороны", "пиццы")
-        val filtered = words.filter { it !in stopWords || it in important }
+        
+        val filtered = words.filter { it !in stopWords }
         val freq = filtered.groupingBy { it }.eachCount()
-        return freq.entries.sortedByDescending { it.value }.map { it.key }.take(18)
+        
+        return freq.entries.sortedByDescending { it.value }
+            .map { it.key }
+            .take(15)
     }
-
-    // v29: еще больше пиццы и птиц, diverse
-    private fun randomPlaceFull(genre: String, keywords: List<String> = emptyList(), original: String = "", rnd: Random = Random): String {
-        val lowerOrig = original.lowercase()
-        val hasPizza = lowerOrig.contains("пицца") || keywords.contains("пицца") || keywords.contains("пиццы")
-        val hasCrow = lowerOrig.contains("ворон") || keywords.contains("ворон") || keywords.contains("вороны") || keywords.contains("птица") || keywords.contains("птицы")
-        val hasCoffee = lowerOrig.contains("кофе") || keywords.contains("кофе")
-
-        val extra = mutableListOf<String>()
-        if (hasPizza) extra.addAll(listOf("в пиццерии на углу", "за столиком с пиццей", "на кухне с коробкой пиццы", "у доставки пиццы", "в очереди за пиццей", "в пиццерии где пахнет пепперони", "за столиком с маргаритой", "на кухне с пиццей и крошками"))
-        if (hasCrow) extra.addAll(listOf("у гнезда ворона", "на крыше с вороном", "в парке где кружат вороны", "под деревом с вороном", "у окна где сидит ворон", "на крыше с птицами", "в парке с голубями и воронами", "у кормушки для птиц", "на балконе с воронами", "в сквере где птицы клюют крошки пиццы"))
-        if (hasCoffee) extra.addAll(listOf("у кофемашины", "в кофейне", "за столиком с кофе", "на кухне с ароматом кофе", "у кофемашины где ворон варит кофе"))
-
-        val base = when (genre) {
-            "Фантастика" -> listOf("на краю Галактики", "на станции Орион-9", "в заброшенном космопорте", "у квантового разлома", "в городе из стекла", "на орбите Марса", "в лаборатории времени", "на корабле Аврора", "в куполе на Луне", "у черной дыры", "в нейросети", "в колонии на Титане")
-            "Детектив", "Боевик" -> listOf("в старом районе города", "на заброшенном складе", "в ночном кафе", "в архиве полиции", "на крыше", "в подвале", "у окна", "на перекрестке", "в переулке", "на вокзале", "в порту", "в гараже", "в кабинете следователя", "в отделе улик", "на месте преступления", "в дежурной части", "у реки за городом")
-            "Роман" -> listOf("на берегу моря", "в маленьком городке у реки", "в старом парке", "в уютном кафе", "на многолюдной улице", "в пустой квартире", "у камина", "на мосту", "в саду с розами", "на набережной", "в библиотеке", "в поезде", "в осеннем сквере", "на кухне с видом на двор")
-            "Приключения" -> listOf("в джунглях Амазонки", "на затерянном острове", "на горном перевале", "в пустыне Сахара", "в древнем храме", "в пещере с кристаллами", "на пиратском корабле", "в лабиринте", "на вершине Эвереста", "в долине гейзеров", "в ущелье ветров", "на краю карты")
-            "Хоррор" -> listOf("в заброшенной больнице", "в старом доме на холме", "в темном лесу", "в подвале с шепотом", "в туманной деревне", "в склепе", "в доме с зеркалами", "на кладбище", "в лесу без птиц", "в квартире 13", "в коридоре без ламп", "у заколоченного окна")
-            "Юмор" -> listOf("в офисе с кофемашиной", "в супермаркете в час пик", "в маршрутке 42", "в чате домового ТСЖ", "в квартире с котом", "на корпоративе", "в очереди в поликлинике", "в лифте с соседом", "на даче у тещи", "в коворкинге", "у кулера с водой", "в пиццерии", "на кухне с пиццей и вороном", "у окна где ворон клюет крошки пиццы", "в пиццерии с птицами", "на крыше где вороны едят пиццу")
-            else -> listOf("на берегу моря", "в тихом городе", "на перекрестке дорог", "внутри себя", "на многолюдной улице", "в пустой квартире", "у окна", "на краю мира", "в старом парке", "в кафе", "в вагоне метро", "на остановке под дождём", "в пиццерии", "на крыше с вороном", "за столиком с пиццей", "в парке с птицами", "у кормушки для птиц")
-        }
-        val all = if (extra.isNotEmpty() && rnd.nextFloat() < 0.65f) extra + base else base + extra
-        return all.random(rnd)
+    
+    private fun detectPhilosophical(text: String, keywords: List<String>): Boolean {
+        val lower = text.lowercase()
+        val markers = listOf("жизнь", "душа", "сознание", "смысл", "свобода", "одиночество", "выбор", "страх")
+        val count = markers.count { lower.contains(it) }
+        
+        return count >= 2 || keywords.contains("жизнь") || keywords.contains("душа")
     }
-
-    private fun randomPlaceNoun(genre: String, keywords: List<String> = emptyList()): String {
-        val hasPizza = keywords.contains("пицца") || keywords.contains("пиццы")
-        val hasCrow = keywords.contains("ворон") || keywords.contains("вороны") || keywords.contains("птица") || keywords.contains("птицы")
-        val extra = mutableListOf<String>()
-        if (hasPizza) extra.addAll(listOf("пиццерия", "коробка пиццы", "кусок пиццы", "доставка пиццы", "пепперони", "маргарита"))
-        if (hasCrow) extra.addAll(listOf("ворон", "вороны", "гнездо ворона", "крыша с вороном", "парк с воронами", "птица", "птицы", "кормушка для птиц", "стая птиц"))
-        val base = when (genre) {
-            "Детектив", "Боевик" -> listOf("заброшенный склад", "старый район", "ночное кафе", "архив полиции", "крыша", "подвал", "перекресток", "кабинет следователя", "переулок", "вокзал", "порт", "гараж", "отдел улик", "место преступления")
-            "Роман" -> listOf("берег моря", "маленький городок", "старый парк", "уютное кафе", "многолюдная улица", "пустая квартира", "камин", "мост", "сад", "набережная", "библиотека")
-            "Фантастика" -> listOf("космопорт", "станция Орион", "квантовый разлом", "город из стекла", "корабль", "лаборатория", "купол", "колония")
-            else -> listOf("тихий город", "перекресток дорог", "пустая квартира", "берег моря", "старый парк", "окно", "кафе", "улица", "пиццерия", "крыша", "ворон", "пицца", "птицы")
-        }
-        return (base + extra).random()
-    }
-
+    
     private fun generateTitle(original: String, keywords: List<String>, genre: String): String {
         val key = keywords.firstOrNull()?.replaceFirstChar { it.uppercase() } ?: "Тишина"
         val key2 = keywords.getOrElse(1) { "судьба" }
-        val hasPizza = original.lowercase().contains("пицца") || keywords.contains("пицца")
-        val hasCrow = original.lowercase().contains("ворон") || keywords.contains("ворон") || keywords.contains("птицы")
+        
         val titles = when (genre) {
-            "Боевик" -> listOf("Последний выстрел: $key", "Операция $key2", "Код $key")
-            "Философская проза" -> listOf("Внутренний голос: $key", "Когда $key молчит")
-            "Детектив" -> listOf("Дело № $key", "Тени $key2", "Улика $key")
-            "Фантастика" -> listOf("Станция $key", "Сигнал $key2")
-            "Роман" -> listOf("Когда $key молчит", "$key и $key2")
-            "Юмор" -> {
-                if (hasPizza && hasCrow) listOf("Пицца для ворона: $key", "Вороны и $key2", "Доставка $key", "Крыша, пицца и $key", "Птицы, пицца и $key2", "Ворон, который украл $key")
-                else if (hasPizza) listOf("Пицца $key", "Доставка $key2", "Коробка $key и $key2")
-                else if (hasCrow) listOf("Ворон $key", "Птицы $key2", "Крыша $key", "Стая $key2")
-                else listOf("Офис $key", "Кот $key2")
-            }
-            else -> {
-                if (hasPizza && hasCrow) listOf("Пицца и ворон: $key", "Когда $key пахнет пиццей", "Вороны $key2", "Птицы и $key", "История $key и пиццы")
-                else listOf("Когда $key молчит", "$key и $key2", "Эхо $key")
-            }
+            "Боевик" -> listOf("Последний выстрел", "Операция $key", "Код $key")
+            "Детектив" -> listOf("Дело № $key", "Тени $key", "Улика")
+            "Фантастика" -> listOf("Станция $key", "Сигнал $key", "Коридор времени")
+            "Роман" -> listOf("Когда $key молчит", "$key и $key2", "Сердце помнит")
+            "Приключения" -> listOf("Путь к $key", "Тайна $key", "Экспедиция")
+            "Хоррор" -> listOf("Шёпот $key", "Тени $key", "Ночь без сна")
+            "Юмор" -> listOf("Невероятный $key", "$key и другие неприятности", "Как я попал...")
+            else -> listOf("Когда $key молчит", "$key и $key2", "Эхо $key")
         }
+        
         return titles.random()
     }
-
-    private fun placeHolder(): String = listOf("прошлого", "будущего", "тишины", "ночи", "города", "памяти", "пиццы", "ворона", "птиц").random()
-
-    // v29: еще более разнообразные сюжеты
-    private fun createOutline(pages: Int, genre: String, heroes: List<String>, keywords: List<String>, isPhilosophical: Boolean, original: String): List<String> {
-        val hash = original.hashCode()
-        val rnd = Random(hash + keywords.hashCode())
-        val kw1 = keywords.getOrElse(0) { "тайна" }
-        val kw2 = keywords.getOrElse(1) { "дорога" }
-        val kw3 = keywords.getOrElse(2) { "выбор" }
-        val hasPizza = original.lowercase().contains("пицца") || keywords.contains("пицца")
-        val hasCrow = original.lowercase().contains("ворон") || keywords.contains("ворон") || keywords.contains("птицы")
-
-        return if (isPhilosophical) {
-            listOf(
-                "Пролог: Голос $kw1 внутри",
-                "Глава 1: Откуда $kw1",
-                "Глава 2: $kw2 и $kw3",
-                "Встреча: ${if (hasCrow) "Ворон" else "Улица"}",
-                "Глава 3: ${if (hasPizza) "Пицца и $kw1" else "Право на $kw1"}",
-                "Поворот: $kw2",
-                "Глава 4: ${if (hasCrow) "Птицы $kw3" else "Учителя $kw1"}",
-                "Глава 5: $kw2",
-                "Интерлюдия: ${if (hasPizza) "Пицца и тишина" else "Тишина $kw3"}",
-                "Глава 6: ${if (hasCrow) "Вороны на крыше $kw1" else "Право идти $kw2"}",
-                "Эпилог: $kw3",
-                "Послесловие: $kw1"
-            )
-        } else {
-            val base = when (genre) {
-                "Боевик" -> listOf("Пролог: $kw1", "Глава 1: $kw2", "Затишье $kw3", "Глава 2: $kw1 — $kw2", "Разбор $kw3", "Глава 3: $kw1", "Глава 4: $kw2", "Глава 5: $kw3", "Эпилог: $kw1")
-                "Детектив" -> listOf("Пролог: Звонок про $kw1", "Глава 1: $kw2 на месте $kw3", "Глава 2: Свидетель $kw1", "Улика: $kw2", "Глава 3: $kw3", "Глава 4: Архив $kw1", "Глава 5: $kw2", "Развязка $kw3", "Эпилог: $kw1")
-                "Роман" -> listOf("Пролог: $kw1", "Глава 1: $kw2", "Глава 2: $kw3 и $kw1", "Разговор $kw2", "Глава 3: $kw3", "Глава 4: $kw1", "Глава 5: $kw2", "Эпилог: $kw3")
-                "Фантастика" -> listOf("Пролог: Сигнал $kw1", "Глава 1: $kw2", "Глава 2: $kw3", "Глава 3: $kw1", "Глава 4: $kw2", "Глава 5: $kw3", "Эпилог: $kw1")
-                "Приключения" -> listOf("Пролог: Карта $kw1", "Глава 1: $kw2", "Глава 2: $kw3", "Глава 3: $kw1", "Глава 4: $kw2", "Глава 5: $kw3", "Эпилог: $kw1")
-                "Хоррор" -> listOf("Пролог: Шепот $kw1", "Глава 1: $kw2", "Глава 2: $kw3", "Глава 3: $kw1", "Глава 4: $kw2", "Эпилог: $kw3")
-                "Юмор" -> {
-                    if (hasPizza && hasCrow) listOf("Пролог: Заказ $kw1", "Глава 1: Пицца $kw2", "Глава 2: Вороны $kw3", "Глава 3: Птицы $kw1", "Глава 4: Доставка $kw2", "Глава 5: Крыша $kw3", "Глава 6: Крошки $kw1", "Эпилог: Пицца и птицы $kw2")
-                    else if (hasPizza) listOf("Пролог: Голод $kw1", "Глава 1: Пицца $kw2", "Глава 2: $kw3", "Глава 3: $kw1", "Глава 4: $kw2", "Эпилог: $kw3")
-                    else if (hasCrow) listOf("Пролог: Кар $kw1", "Глава 1: Ворон $kw2", "Глава 2: Птицы $kw3", "Глава 3: Гнездо $kw1", "Глава 4: Стая $kw2", "Эпилог: $kw3")
-                    else listOf("Пролог: $kw1", "Глава 1: Офис $kw2", "Глава 2: $kw3", "Глава 3: $kw1", "Глава 4: $kw2", "Эпилог: $kw3")
-                }
-                else -> {
-                    if (hasPizza && hasCrow) listOf("Пролог: $kw1", "Глава 1: Пицца $kw2", "Глава 2: Вороны $kw3", "Глава 3: Птицы $kw1", "Глава 4: $kw2", "Глава 5: $kw3 и пицца", "Кульминация: $kw1 и птицы", "Эпилог: $kw2")
-                    else listOf("Пролог: $kw1", "Глава 1: $kw2", "Встреча $kw3", "Глава 2: $kw1", "Поворот $kw2", "Глава 3: $kw3", "Раскрытие $kw1", "Кульминация $kw2", "Эпилог: $kw3")
-                }
-            }
-            // v29: 3 варианта outline чтобы не было 1 сюжета
-            val variant = rnd.nextInt(3)
-            when (variant) {
-                0 -> base
-                1 -> base.reversed()
-                else -> base.shuffled(rnd)
-            }
-        }
-    }
-
-    private fun generateBridge(heroes: List<String>, placeFull: String, isPhilosophical: Boolean, learnedPlaces: List<String>, learnedPhrases: List<String>, learnedHeroes: List<String>, keywords: List<String>, original: String): String {
-        val hero = heroes.firstOrNull() ?: learnedHeroes.firstOrNull() ?: "он"
-        val phrase = if (learnedPhrases.isNotEmpty() && Random.nextFloat() < 0.5f) learnedPhrases.random() else ""
-        val connector = if (phrase.isNotEmpty()) "${phrase.replaceFirstChar { it.uppercase() }}, " else ""
-        val kw = keywords.firstOrNull() ?: "тайна"
-        val hasPizza = original.lowercase().contains("пицца") || keywords.contains("пицца")
-        val hasCrow = original.lowercase().contains("ворон") || keywords.contains("ворон") || keywords.contains("птицы")
-        return if (isPhilosophical) {
-            val variants = listOf(
-                "${connector}С этих строк про $kw. $placeFull — лишь декорация.",
-                "${connector}Ты пишешь про $kw. $placeFull вокруг, но главное внутри про $kw."
-            )
-            variants.random()
-        } else {
-            val variants = mutableListOf<String>()
-            variants.add("${connector}История про $kw началась $placeFull. $hero еще не знал про ${keywords.getOrElse(1){"дорогу"}}.")
-            variants.add("$hero $placeFull думал про $kw. День станет поворотным из-за ${keywords.getOrElse(1){"птиц"}}.")
-            if (hasPizza) {
-                variants.add("$hero заказал пиццу $placeFull. В коробке $kw и записка про ${keywords.getOrElse(1){"ворона"}}.")
-                variants.add("Запах пиццы $placeFull — $kw. $hero открыл коробку, а там перо птицы и $kw.")
-            }
-            if (hasCrow) {
-                variants.add("Ворон сидел $placeFull с $kw в клюве. $hero понял — птица знает про ${keywords.getOrElse(1){"пиццу"}}.")
-                variants.add("$placeFull. Вороны кружат, $kw внизу, $hero смотрит. Птицы принесли $kw.")
-                variants.add("Птицы $placeFull. Стая ворон с $kw. $hero понял — это знак про ${keywords.getOrElse(1){"дорогу"}}.")
-            }
-            if (hasPizza && hasCrow) {
-                variants.add("$placeFull. Пицца, вороны, $kw. $hero между коробкой и птицами. Птицы клюют пиццу, а $kw ждет.")
-                variants.add("Пицца на столе $placeFull, вороны на подоконнике, $kw в воздухе. $hero делит пиццу с птицами.")
-            }
-            variants.random()
-        }
-    }
-
-    private fun generatePhilosophicalParagraph(style: String, used: MutableMap<String, MutableSet<Int>>, heroes: List<String>, placeFull: String, recentParagraphs: List<String>, learnedPhrases: List<String>, learnedHeroes: List<String>, learnedPlaces: List<String>, keywords: List<String>, original: String, rnd: Random): String {
-        val hero = heroes.firstOrNull() ?: learnedHeroes.firstOrNull() ?: "ты"
-        val place = if (learnedPlaces.isNotEmpty() && rnd.nextFloat() < 0.4f) learnedPlaces.random() else placeFull
-        val phraseIntro = if (learnedPhrases.isNotEmpty() && rnd.nextFloat() < 0.5f) learnedPhrases.random().replaceFirstChar { it.uppercase() } + ". " else ""
-        val kw = keywords.randomOrNull() ?: "жизнь"
-        val key = "phil_${original.hashCode() % 7}"
-        val paragraphs = listOf(
-            "${phraseIntro}Голос про $kw $place. $hero слышит птиц — вороны каркают $kw.",
-            "Иногда $kw — это пицца. Кусок за куском $place. $hero делит $kw с птицами.",
-            "Вспомни $kw $place. $hero видел ворона с $kw в клюве. Птица знала всё.",
-            "Голос про $kw — это ворон внутри $place. Каркает $kw, когда хочешь тишины.",
-            "Представь $kw как стаю птиц $place. $hero смотрит, как птицы несут $kw.",
-            "$kw $place. $hero ест пиццу, птицы рядом, всем норм про $kw.",
-            "Попробуй $kw завтра $place. Ворон с пиццей. Птица делится $kw.",
-            "Свобода — $kw $place. Пицца, птицы, $hero."
+    
+    private fun generateBridge(context: StoryContext, rng: Random): String {
+        val hero = context.heroes.firstOrNull() ?: "он"
+        val keyword = context.keywords.firstOrNull() ?: "тайна"
+        val place = context.mainPlace
+        
+        val variants = listOf(
+            "История про $keyword началась $place. $hero ещё не знал, что его ждёт.",
+            "$hero стоял $place и думал о $keyword. Этот день изменит всё.",
+            "Всё началось $place. $hero даже не подозревал о $keyword."
         )
-        val usedSet = used.getOrPut(key) { mutableSetOf() }
-        if (usedSet.size >= paragraphs.size) usedSet.clear()
-        var idx: Int
-        var attempts = 0
-        var text: String
-        do {
-            val available = paragraphs.indices.filter { it !in usedSet }
-            idx = if (available.isNotEmpty()) available.random(rnd) else rnd.nextInt(paragraphs.size)
-            text = paragraphs[idx]
-            attempts++
-        } while (attempts < 6 && recentParagraphs.any { jaccard(text, it) > 0.55 })
-        usedSet.add(idx)
-        return when (style) {
-            "Лаконичный" -> text.split(". ").take(3).joinToString(". ") + "."
-            "Поэтический" -> text + " Воздух как перо птицы."
-            else -> text
-        }
+        
+        return variants.random(rng)
     }
-
-    // v29: FIX 1 сюжет + птицы + пицца + кофе птица а не она
-    private fun generateNarrativeParagraph(genre: String, style: String, heroes: List<String>, keywords: List<String>, placeFull: String, placeNoun: String, used: MutableMap<String, MutableSet<Int>>, recentParagraphs: List<String>, learnedPhrases: List<String>, learnedHeroes: List<String>, learnedPlaces: List<String>, original: String, rnd: Random): String {
-        val hero = heroes.firstOrNull() ?: learnedHeroes.firstOrNull() ?: "он"
-        val heroCap = hero.replaceFirstChar { it.uppercase() }
-        val hero2 = heroes.getOrElse(1) { learnedHeroes.getOrElse(1) { "она" } }
-        val kw = keywords.randomOrNull() ?: "тайна"
-        val kw2 = keywords.getOrElse(1) { "дорога" }
-        val kw3 = keywords.getOrElse(2) { "выбор" }
-        val hasPizza = original.lowercase().contains("пицца") || keywords.contains("пицца") || rnd.nextFloat() < 0.3f
-        val hasCrow = original.lowercase().contains("ворон") || keywords.contains("ворон") || keywords.contains("птицы") || keywords.contains("птица") || rnd.nextFloat() < 0.4f
-
-        val pools = mapOf(
-            "Боевик" to listOf(
-                "${heroCap} $placeFull: $kw и $kw2. Пицца в рюкзаке, ворон над головой с $kw3.",
-                "Выстрел про $kw $placeFull. $heroCap, пицца и птицы — всё в одной точке $kw2.",
-                if (hasCrow) "Ворон каркнул $kw $placeFull. Стая птиц про $kw2. $heroCap понял — $kw3 рядом." else "Ветер $kw $placeFull.",
-                if (hasPizza) "Коробка пиццы $placeFull с $kw внутри. $heroCap открыл — там $kw2 и перо птицы." else "Записка $kw $placeFull."
-            ),
-            "Детектив" to listOf(
-                "Дождь $placeFull. $heroCap, фото $kw, пицца с $kw2, вороны за окном с $kw3.",
-                "Архив $kw $placeFull. Папка $kw2, внутри перья птиц и чек от пиццы с $kw3.",
-                "Ворон принес улику $placeFull: $kw. Птица, а не она, сделала кофе! Стая птиц видела $kw2.",
-                "Свидетель — ворон $placeFull. Птица каркнула $kw. $heroCap записал $kw2 и $kw3.",
-                "Пицца $placeFull — улика $kw. Вороны ели $kw2, а $heroCap искал $kw3."
-            ),
-            "Роман" to listOf(
-                "Письмо $kw $placeFull. $heroCap и $hero2, пицца, птицы, $kw2.",
-                if (hasCrow) "Ворон принес кофе $placeFull, а не она. Птица сделала кофе с $kw. Стая птиц наблюдала $kw2." else "Кофе $placeFull от утра с $kw.",
-                "Чашку оставил ворон $placeFull, а не она. Птица, а не она, сделала кофе. $heroCap пил $kw с птицами.",
-                "Любовь — $kw и $kw2 $placeFull. Пицца на двоих, крошки — птицам, $kw3 — всем.",
-                "Пицца $placeFull. $heroCap и $hero2, $kw, птицы едят $kw2."
-            ),
-            "Фантастика" to listOf(
-                "Корабль $placeFull. Экраны $kw, ворон на панели с $kw2, птицы в отсеке с $kw3.",
-                "Сигнал $kw $placeFull от стаи птиц. Вороны шлют $kw2 и пиццу.",
-                "Пицца в невесомости $placeFull. $heroCap ловит $kw, птицы — $kw2.",
-                "Нейросеть голосом ворона $placeFull: $kw — это $kw2, птицы — $kw3."
-            ),
-            "Юмор" to listOf(
-                "Пицца $placeFull. $heroCap заказал $kw, привезли $kw2 и стаю птиц с вороном.",
-                "Ворон ест пиццу $placeFull. $heroCap: ты кто? Ворон: я $kw, птицы — $kw2, пицца — $kw3.",
-                "Офис $placeFull. Кофе сделал ворон, а не она! Птица, птицы, стая — все варят кофе с $kw.",
-                "Маршрутка с пиццей и птицами $placeFull. $heroCap с $kw, ворон с $kw2, птицы с $kw3.",
-                "Чат ТСЖ: кто заказал пиццу с $kw? Вороны ответили: мы, птицы. И съели $kw2 и $kw3.",
-                "Пицца остыла, вороны согрелись $placeFull. $heroCap и птицы едят $kw.",
-                "Ворон принес кофе $placeFull. Не она, а птица! Птицы, стая, все делают кофе с $kw и $kw2."
-            )
-        )
-
-        val generalPool = mutableListOf<String>()
-        generalPool.addAll(listOf(
-            "${heroCap} $placeFull с пиццей и птицами. В голове $kw, над головой вороны с $kw2, в руках $kw3.",
-            "Вечер $placeFull. $heroCap пишет $kw, птицы клюют $kw2 и $kw3.",
-            "Тишина $placeFull. $kw, запах пиццы, карканье ворон про $kw2 и $kw3.",
-            "$heroCap вспомнил $kw $placeFull. Птицы кивнули про $kw2.",
-            "Воздух $kw и пиццы $placeFull. $heroCap и птицы вдыхают $kw2 и $kw3.",
-            // КОФЕ ДЕЛАЕТ ПТИЦА А НЕ ОНА - v29 FIX
-            "Кофе $placeFull сделал ворон, а не она. Птица принесла чашку в клюве. $heroCap пил $kw с птицами.",
-            "Кофе сделал не она, а птицы. Стая ворон принесла $kw $placeFull. $heroCap пил с перьями и $kw2.",
-            "Она оставила кофе? Нет! $placeFull кофе сделали птицы. Вороны, а не она! $heroCap удивился — птицы варят лучше.",
-            "Чашка кофе $placeFull от птиц, а не от неё. Вороны принесли $kw. Птица, а не она, сделала кофе.",
-            "Кофемашина сломалась $placeFull. Кофе сделали птицы. Вороны, а не она! $heroCap пил $kw и $kw2.",
-            "Запах кофе $placeFull от клюва ворона, а не от её рук. Птицы принесли $kw. Не она, а птица!",
-            "Кофе от птицы $placeFull. Ворон, а не она, сделал кофе. Стая птиц одобрила $kw.",
-            "Птицы сделали кофе $placeFull. Не она, а вороны! $heroCap пил кофе с $kw и крошками пиццы.",
-            // ПИЦЦА + ПТИЦЫ
-            "Пицца $placeFull. $heroCap открыл коробку $kw, а сверху стая птиц ест $kw2 и $kw3.",
-            "Вороны украли пиццу $placeFull. $heroCap гнался за $kw, птицы унесли $kw2.",
-            "Коробка пиццы $placeFull со следами клювов птиц. Вороны съели $kw, осталось $kw2.",
-            "Пицца и птицы $placeFull. $heroCap делит $kw со стаей. Птицы клюют $kw2, $heroCap — $kw3.",
-            "Доставка пиццы $placeFull — вороны. Птицы, а не курьер! Стая в клювах несет $kw.",
-            "Вороны на крыше $placeFull с пиццей $kw. $heroCap снизу про $kw2, птицы про $kw3.",
-            "Пицца остыла $placeFull, а стая птиц согрелась. $heroCap и птицы едят $kw и $kw2.",
-            "Крошки пиццы $placeFull клюют птицы. $heroCap и вороны делят $kw и $kw2.",
-            "$heroCap заказал пиццу с $kw $placeFull. Привезли $kw2 и стаю птиц.",
-            "Птицы, пицца и $kw $placeFull. $heroCap между коробкой и стаей. $kw2 ждет.",
-            "$placeFull. Пицца, птицы, $kw, $kw2, $kw3. $heroCap понял — это сюжет.",
-            "Пыль и крошки пиццы $placeFull. Перья птиц и $kw. $heroCap нашел $kw2.",
-            "День $heroCap $placeFull с пиццей и птицами. $kw и $kw2 в небе.",
-            "$heroCap на ступеньке $placeFull с пиццей. Стая птиц с $kw ест $kw2.",
-            "Ночь $placeFull. Пицца, птицы, $kw, $kw2, $kw3 у $heroCap.",
-            "$heroCap открыл блокнот $placeFull: пицца, птицы, $kw, $kw2. Пишет $kw3.",
-            "Ветер $kw и пиццы $placeFull. Птицы принесли $kw2 и $kw3.",
-            "Дверь $placeFull: за ней птицы с пиццей и $kw. $heroCap впустил $kw2.",
-            "Записка $placeFull: ушел с птицами за пиццей, ищу $kw и $kw2.",
-            "Свет $placeFull: пицца светится, птицы светятся, $kw светится.",
-            "$heroCap $placeFull. $kw начинается. Пицца и птицы тоже.",
-            "Дождь $placeFull стучит $kw. Птицы слушают $kw2, пицца остывает с $kw3.",
-            "Закат как пицца $placeFull. $heroCap ест $kw глазами, птицы — $kw2.",
-            "Книга $placeFull про $kw. Рядом пицца и перья птиц про $kw2 и $kw3.",
-            "Дорога пуста $placeFull, но крошки пиццы и перья птиц ведут к $kw и $kw2."
-        ))
-
-        if (learnedPhrases.isNotEmpty()) {
-            val lp = learnedPhrases.random(rnd)
-            generalPool.add("$heroCap $placeFull вспомнил: $lp. Про $kw и птиц.")
-        }
-
-        val genreKey = when (genre) {
-            "Боевик", "Детектив", "Роман", "Фантастика", "Приключения", "Хоррор", "Юмор" -> genre
-            else -> "general"
-        }
-        val pool = pools[genreKey] ?: generalPool
-        val finalPool = if (genreKey == "general") generalPool else pool + generalPool.shuffled(rnd).take(15)
-
-        // v29: diverse key with original hash + keywords + rnd to avoid 1 сюжет
-        val usedKey = genreKey + "_" + original.hashCode() + "_" + keywords.take(3).joinToString("_") + "_" + (original.length % 10)
-        val usedSet = used.getOrPut(usedKey) { mutableSetOf() }
-        if (usedSet.size >= finalPool.size) usedSet.clear()
-        var idx: Int
-        var attempts = 0
-        var text: String
-        do {
-            val available = finalPool.indices.filter { it !in usedSet }
-            idx = if (available.isNotEmpty()) available.random(rnd) else rnd.nextInt(finalPool.size)
-            text = finalPool[idx]
-            attempts++
-        } while (attempts < 8 && recentParagraphs.any { jaccard(text, it) > 0.55 })
-        usedSet.add(idx)
-
-        if (rnd.nextFloat() < 0.3f) {
-            val dialogues = listOf(
-                " — $kw? — спросила $hero2.\n— Да, и пицца с птицами, — ответил $heroCap. — $kw2 и $kw3.",
-                " — Кофе от птицы? — Да, не она, а вороны. Птицы сделали $kw $placeNoun.",
-                " — Пицца с $kw? — Да, и стая птиц. — Кар! — согласились птицы про $kw2.",
-                " — Вороны и $kw? — Да, птицы принесли $kw2 и пиццу $kw3 $placeNoun."
-            )
-            if (rnd.nextBoolean()) text += "\n\n" + dialogues.random(rnd)
-        }
-
-        text = when (style) {
-            "Лаконичный" -> text.split(". ").take(2).joinToString(". ") + "."
-            "Поэтический" -> text + " Свет как сыр на пицце, птицы как перья."
-            "Драматичный" -> text + " Сердце как клюв ворона про $kw."
-            "Ироничный" -> text + " Доставка пиццы птицами — $kw."
-            else -> text
-        }
-        return text
-    }
-
-    private fun generateEnding(genre: String, heroes: List<String>, keywords: List<String>, placeFull: String, isPhilosophical: Boolean, authorName: String, original: String): String {
-        val author = if (authorName.isNotBlank()) authorName else "Zakharevich Igor"
-        val kw = keywords.firstOrNull() ?: "тайна"
-        val kw2 = keywords.getOrElse(1) { "дорога" }
-        val kw3 = keywords.getOrElse(2) { "выбор" }
-        val heroCap = heroes.firstOrNull()?.replaceFirstChar { it.uppercase() } ?: "Он"
-        val hasPizza = original.lowercase().contains("пицца") || keywords.contains("пицца")
-        val hasCrow = original.lowercase().contains("ворон") || keywords.contains("ворон") || keywords.contains("птицы")
-        return if (isPhilosophical) {
-            """
-
-И вот ты $placeFull с $kw и $kw2. Вороны, птицы, пицца.
-
-$kw — это не она, а птицы. Кофе сделали птицы, а не она. Птицы принесли $kw.
-
-— Конец —
-
-Сгенерировано в ZI Writer v29 BIRDS+PIZZA • $author • $kw • птицы, а не она, сделали кофе
-""".trimIndent()
+    
+    private fun generateEnding(genre: String, heroes: List<String>, keywords: List<String>, place: String, isPhilosophical: Boolean, authorName: String): String {
+        val hero = heroes.firstOrNull() ?: "Он"
+        val keyword = keywords.firstOrNull() ?: "тайна"
+        val author = if (authorName.isNotBlank()) authorName else "Автор"
+        
+        val ending = if (isPhilosophical) {
+            "И вот $hero стоит $place, размышляя о $keyword. Жизнь продолжается, но ничего уже не будет прежним."
         } else {
-            val ending = when (genre) {
-                "Боевик" -> """
-                    $placeFull. $kw, пицца, птицы, $kw2. $heroCap понял — $kw3.
-
-                    Гильза, крошка пиццы, перо птицы. Вороны каркнули $kw.
-
-                    — Конец —
-
-                    Сгенерировано в ZI Writer v29 BIRDS+PIZZA • $author • $kw • птицы сделали кофе, а не она
-                """.trimIndent()
-                "Юмор" -> """
-                    Пицца съедена $placeFull, птицы наелись $kw, $placeFull опустел.
-
-                    Кофе сделали птицы, а не она! Стая ворон принесла кофе с $kw и $kw2.
-
-                    Птицы, а не она, сделали кофе. Пицца и вороны — $kw.
-
-                    — Конец —
-
-                    Сгенерировано в ZI Writer v29 BIRDS+PIZZA • $author • $kw • пицца, птицы, кофе от птиц
-                """.trimIndent()
-                else -> """
-                    $placeFull. $kw, пицца, птицы, $kw2. $heroes.
-
-                    Кофе сделали птицы, а не она. Вороны принесли чашку в клювах. $kw пахла пиццей и кофе от птиц.
-
-                    Птицы, а не она, сделали кофе. Пицца и вороны — лучший сюжет про $kw.
-
-                    — Конец —
-
-                    Сгенерировано в ZI Writer v29 BIRDS+PIZZA • $author • $kw • ${heroes.joinToString(", ")} • птицы сделали кофе, а не она • пицца, вороны
-                """.trimIndent()
-            }
-            "\n\n$ending"
+            "$place. $hero понял, что $keyword — это только начало. Впереди его ждёт новый путь."
         }
+        
+        return "\n\n$ending\n\n— Конец —\n\nСгенерировано в ZI Writer • $author"
+    }
+    
+    private fun randomPlaceFull(genre: String, keywords: List<String> = emptyList(), original: String = "", rng: Random = Random): String {
+        // Если в исходном тексте есть специфические места — учитываем их
+        val lowerOrig = original.lowercase()
+        val extra = mutableListOf<String>()
+        if (lowerOrig.contains("море") || keywords.contains("море")) extra.addAll(listOf("на берегу моря", "у волны", "на набережной"))
+        if (lowerOrig.contains("лес") || keywords.contains("лес")) extra.addAll(listOf("в лесу", "на лесной тропе", "среди деревьев"))
+        if (lowerOrig.contains("город") || keywords.contains("город")) extra.addAll(listOf("на улице города", "в переулке", "на площади"))
+        
+        val base = when (genre) {
+            "Детектив" -> listOf("в старом районе", "на заброшенном складе", "в ночном кафе", "в архиве полиции")
+            "Роман" -> listOf("на берегу моря", "в маленьком городке", "в старом парке", "в уютном кафе")
+            "Фантастика" -> listOf("на станции Орион", "в космопорте", "на корабле", "в лаборатории")
+            "Боевик" -> listOf("на складе оружия", "в тренировочном лагере", "в зоне конфликта")
+            "Приключения" -> listOf("в джунглях", "на затерянном острове", "в древнем храме")
+            "Хоррор" -> listOf("в заброшенном доме", "в тёмном лесу", "в старой больнице")
+            "Юмор" -> listOf("в офисе", "в супермаркете", "в маршрутке", "в парке")
+            else -> listOf("в тихом городе", "на перекрёстке", "в кафе", "у окна")
+        }
+        
+        val all = if (extra.isNotEmpty()) base + extra else base
+        return all.random(rng)
     }
 }

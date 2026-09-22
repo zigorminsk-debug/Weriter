@@ -558,11 +558,19 @@ object LearningManager {
             val booksDir = getBooksDir(context)
             if (!booksDir.exists()) return 0
             val files = booksDir.listFiles()?.filter { it.isFile && it.length() > 200 } ?: return 0
+
+            // Загружаем индекс книг, чтобы восстановить жанр каждой при пересборке
+            val knownBooks = try { getLearnedBooks(context) } catch (e: Exception) { emptyList() }
+            val pathToGenre = knownBooks.associate { it.path to it.genre }
+
             for (f in files.take(100)) {
                 try {
                     val text = f.readText().take(200000)
                     if (text.length < 200) continue
-                    appendLearnedData(context, text)
+                    // Восстанавливаем жанр из индекса; если книги нет в индексе — определяем по содержимому
+                    val genre = pathToGenre[f.absolutePath]
+                        ?: StoryGenerator.detectGenreStatic(text)
+                    appendLearnedData(context, text, genre)
                     count++
                 } catch (e: Exception) { continue }
             }

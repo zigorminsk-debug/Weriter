@@ -154,9 +154,12 @@ object ChapterIllustrator {
             FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 90, it) }
 
             try {
-                val dlDir = File("/storage/emulated/0/Download/ZIWriter_Illustrations")
-                if (!dlDir.exists()) dlDir.mkdirs()
-                val dlFile = File(dlDir, fileName)
+                val dlDir = android.os.Environment.getExternalStoragePublicDirectory(
+                    android.os.Environment.DIRECTORY_DOWNLOADS
+                )
+                val illustDir = java.io.File(dlDir, "ZIWriter_Illustrations")
+                if (!illustDir.exists()) illustDir.mkdirs()
+                val dlFile = java.io.File(illustDir, fileName)
                 file.copyTo(dlFile, true)
             } catch (e: Exception) {}
 

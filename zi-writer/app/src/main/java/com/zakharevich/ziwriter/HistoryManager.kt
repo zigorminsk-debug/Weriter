@@ -54,7 +54,16 @@ object HistoryManager {
 
     fun loadHistoryItem(path: String): String? {
         return try {
-            File(path).readText()
+            val raw = File(path).readText()
+            // Пропускаем шапку метаданных (до первого двойного перевода строк),
+            // чтобы в результат попадал только художественный текст, а не
+            // «Название: ... Листов: ... Знаков: ...».
+            val separatorIdx = raw.indexOf("\n\n")
+            if (separatorIdx > 0 && raw.substring(0, separatorIdx).contains("Название:")) {
+                raw.substring(separatorIdx + 2)
+            } else {
+                raw
+            }
         } catch (e: Exception) {
             null
         }
