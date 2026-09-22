@@ -226,6 +226,7 @@ object InternetBookFetcher {
             conn.requestMethod = "GET"
             conn.connectTimeout = timeout
             conn.readTimeout = timeout
+            conn.instanceFollowRedirects = true
             conn.setRequestProperty("User-Agent", "ZI-Writer/6.0 (Android; +375293371412)")
             conn.setRequestProperty("Accept", "application/json, text/plain, */*")
 

@@ -93,8 +93,9 @@ object PdfExporter {
                 pdfDocument.finishPage(page)
                 pageNumber++
 
-                // Safety
-                if (pageNumber > 100) break
+                // Safety — при максимальной генерации (50 листов ≈ ~90 000 знаков)
+                // реально может получиться до ~120 страниц PDF, закладываем запас.
+                if (pageNumber > 300) break
             }
 
             // Save

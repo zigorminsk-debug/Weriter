@@ -191,3 +191,36 @@ jobs:
               --title "ZI Writer $TAG" \
               --generate-notes
           fi
+
+      - name: Обновление RELEASE_INFO.json (зеркало проверки обновлений)
+        if: github.event_name == 'release' || github.event.inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION_NAME: ${{ steps.meta.outputs.version_name }}
+          APK_NAME: ${{ steps.meta.outputs.apk_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -e
+          APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${APK_NAME}"
+          BODY="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null || echo '')"
+          export TAG VERSION_NAME APK_URL BODY
+          CONTENT=$(python3 -c '
+          import json, os, datetime
+          print(json.dumps({
+              "app": "ZI Writer",
+              "tag_name": os.environ["TAG"],
+              "version_name": os.environ["VERSION_NAME"],
+              "body": os.environ.get("BODY", ""),
+              "published_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "apk_url": os.environ["APK_URL"]
+          }, ensure_ascii=False, indent=2))
+          ')
+          B64=$(printf '%s' "$CONTENT" | base64 -w0)
+          SHA=$(gh api "repos/${GITHUB_REPOSITORY}/contents/RELEASE_INFO.json?ref=${DEFAULT_BRANCH}" --jq .sha 2>/dev/null || true)
+          ARGS=(-X PUT "repos/${GITHUB_REPOSITORY}/contents/RELEASE_INFO.json"
+                -f message="chore: обновить RELEASE_INFO.json для ${TAG}"
+                -f content="$B64"
+                -f branch="${DEFAULT_BRANCH}")
+          if [ -n "$SHA" ]; then ARGS+=(-f sha="$SHA"); fi
+          gh api "${ARGS[@]}" --silent && echo "RELEASE_INFO.json обновлён на ветке ${DEFAULT_BRANCH}"

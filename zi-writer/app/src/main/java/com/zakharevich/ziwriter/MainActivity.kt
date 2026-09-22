@@ -38,6 +38,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var selectedCoverStyle: CoverGenerator.CoverStyle? = null
     private var lastSearchResults: List<InternetBookFetcher.BookInfo> = emptyList()
     private var lastOpdsResults: List<OpdsFetcher.OpdsBook> = emptyList()
+    private var pendingUpdate: UpdateManager.ReleaseInfo? = null
 
     private val storagePermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> }
 
@@ -145,10 +146,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             } catch (ex: Exception) {}
             return
         }
-        try { tts = TextToSpeech(this, this) } catch (e: Exception) {}
-        try { setupDropdowns() } catch (e: Exception) {}
-        try { setupListeners() } catch (e: Exception) {}
-        try { updateEstimate() } catch (e: Exception) {}
+        try { tts = TextToSpeech(this, this) } catch (e: Exception) { android.util.Log.e("ZIWriter", "TTS init failed", e) }
+        try { setupDropdowns() } catch (e: Exception) { android.util.Log.e("ZIWriter", "setupDropdowns failed", e) }
+        try { setupListeners() } catch (e: Exception) { android.util.Log.e("ZIWriter", "setupListeners failed", e) }
+        try { updateEstimate() } catch (e: Exception) { android.util.Log.e("ZIWriter", "updateEstimate failed", e) }
         // Раньше здесь стоял «crash_marker»: если файл-маркер оставался от прошлого запуска
         // (т.е. после ЛЮБОГО падения приложения), база обучения полностью удалялась.
         // Это приводило к потере всех изученных книг — теперь данные никогда не стираются
@@ -163,6 +164,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 storagePermissionLauncher.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
             }
         } catch (e: Exception) {}
+
+        // Проверяем наличие обновлений с GitHub (фоновая проверка)
+        try { checkForUpdates(silent = true) } catch (e: Exception) { android.util.Log.e("ZIWriter", "checkForUpdates failed", e) }
     }
 
     private fun readLimited(reader: java.io.Reader, limit: Int): String {
@@ -287,6 +291,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         try { binding.btnExportLearned.setOnClickListener { exportLearned() } } catch (e: Exception) {}
         try { binding.btnImportLearned.setOnClickListener { importLearned() } } catch (e: Exception) {}
         try { binding.btnAutoLearn.setOnClickListener { autoLearnFlibusta() } } catch (e: Exception) {}
+        try { binding.btnCheckUpdate.setOnClickListener { checkForUpdates(silent = false) } } catch (e: Exception) {}
         binding.btnFontMinus.setOnClickListener {
             if (currentFontSize > 10) {
                 currentFontSize -= 1
@@ -432,6 +437,126 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             .setNegativeButton("Отмена", null).show()
     }
 
+    // === АВТООБНОВЛЕНИЕ ===
+
+    /**
+     * Проверяет наличие новой версии на GitHub Releases.
+     * 
+     * @param silent если true — не показывает ошибки, работает фоном;
+     *               если false — показывает Snackbar при ошибке/отсутствии обновления
+     */
+    private fun checkForUpdates(silent: Boolean = false) {
+        lifecycleScope.launch {
+            // Показываем индикатор загрузки
+            if (!silent) {
+                binding.tvInternetStatus.text = "🔄 Проверка обновлений..."
+                binding.progressInternet.visibility = View.VISIBLE
+            }
+
+            val release = withContext(Dispatchers.IO) {
+                try { UpdateManager.checkForUpdate(this@MainActivity) } catch (e: Exception) { null }
+            }
+
+            if (!silent) {
+                binding.progressInternet.visibility = View.GONE
+            }
+
+            if (release == null) {
+                if (!silent) {
+                    val reason = UpdateManager.lastCheckError
+                        ?: "Не удалось проверить обновления."
+                    Snackbar.make(binding.root, "⚠️ $reason", Snackbar.LENGTH_LONG).show()
+                }
+                return@launch
+            }
+
+            if (release.isAvailable && release.apkUrl != null) {
+                pendingUpdate = release
+                showUpdateDialog(release)
+            } else {
+                if (!silent) {
+                    val currentVersion = try {
+                        packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown"
+                    } catch (e: Exception) { "unknown" }
+                    Snackbar.make(binding.root, "✅ У вас последняя версия ($currentVersion). Обновлений нет.", Snackbar.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    /**
+     * Показывает диалог с предложением обновиться
+     */
+    private fun showUpdateDialog(release: UpdateManager.ReleaseInfo) {
+        val currentVersion = try {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown"
+        } catch (e: Exception) { "unknown" }
+
+        val message = buildString {
+            append("Доступна новая версия: ")
+            append(release.versionName)
+            append("\nТекущая версия: ")
+            append(currentVersion)
+            if (release.releaseNotes.isNotBlank()) {
+                append("\n\n📝 Что нового:\n")
+                append(release.releaseNotes.take(500))
+            }
+            append("\n\nСкачать и установить APK?")
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("🔄 Доступно обновление!")
+            .setMessage(message)
+            .setPositiveButton("📥 Обновить") { _, _ ->
+                startUpdate(release)
+            }
+            .setNeutralButton("📋 На GitHub") { _, _ ->
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/zigorminsk-debug/Weriter/releases"))
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Не удалось открыть ссылку", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Позже", null)
+            .show()
+    }
+
+    /**
+     * Запускает скачивание и установку обновления
+     */
+    private fun startUpdate(release: UpdateManager.ReleaseInfo) {
+        val apkUrl = release.apkUrl ?: run {
+            Toast.makeText(this, "URL APK не найден", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val fileName = release.apkFileName ?: "ZI-Writer-v${release.versionName}.apk"
+
+        binding.tvInternetStatus.text = "📥 Загрузка ${release.versionName}..."
+        binding.progressInternet.visibility = View.VISIBLE
+
+        // Проверяем разрешение на установку из неизвестных источников
+        if (!UpdateManager.canInstallFromUnknownSources(this)) {
+            AlertDialog.Builder(this)
+                .setTitle("Разрешение на установку")
+                .setMessage("Для установки обновления нужно разрешить установку из неизвестных источников.\n\nПосле открытия настроек включите переключатель для ZI Writer.")
+                .setPositiveButton("Открыть настройки") { _, _ ->
+                    UpdateManager.requestInstallPermission(this)
+                }
+                .setNegativeButton("Отмена", null)
+                .show()
+            return
+        }
+
+        val success = UpdateManager.downloadAndInstall(this, apkUrl, fileName)
+        if (!success) {
+            binding.progressInternet.visibility = View.GONE
+            Toast.makeText(this, "Не удалось начать загрузку", Toast.LENGTH_LONG).show()
+        } else {
+            Toast.makeText(this, "Загрузка обновления начата. Следите за уведомлениями.", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun pluralPages(n: Int): String = when {
         n % 10 == 1 && n % 100 != 11 -> "лист"
         n % 10 in 2..4 && n % 100 !in 12..14 -> "листа"
@@ -474,8 +599,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         binding.btnGenerate.isEnabled = false
         binding.btnContinue.isEnabled = false
         lifecycleScope.launch {
-            // v31 MATH MODEL: learnedTemplates больше НЕ используются для вставки чужих отрывков! Только герои/места/обороты + сюжеты
-            val learnedTemplates = withContext(Dispatchers.IO) { emptyList<String>() }
+            // v35: передаём РЕАЛЬНЫЕ предложения из изученных книг — это основа генерации.
+            // Раньше здесь был emptyList() из-за чего генератор работал без материала!
+            val learnedTemplates = withContext(Dispatchers.IO) {
+                if (useLearned) {
+                    val genreKey = if (genre.startsWith("Авто")) "general" else genre
+                    val byGenre = try { LearningManager.getLearnedTemplates(this@MainActivity, genreKey, 300) } catch (e: Exception) { emptyList() }
+                    val all = try { LearningManager.getLearnedTemplates(this@MainActivity, "all", 500) } catch (e: Exception) { emptyList() }
+                    (byGenre + all).distinct()
+                } else emptyList()
+            }
             val learnedHeroes = withContext(Dispatchers.IO) { if (useLearned) LearningManager.getLearnedHeroes(this@MainActivity, 150) else emptyList() }
             val learnedPlaces = withContext(Dispatchers.IO) { if (useLearned) LearningManager.getLearnedPlaces(this@MainActivity, 150) else emptyList() }
             val learnedPhrases = withContext(Dispatchers.IO) { if (useLearned) LearningManager.getLearnedPhrases(this@MainActivity, 150) else emptyList() }

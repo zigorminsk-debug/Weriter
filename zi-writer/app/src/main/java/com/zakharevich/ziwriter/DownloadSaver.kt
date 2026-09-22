@@ -50,10 +50,13 @@ object DownloadSaver {
             values.put(MediaStore.MediaColumns.IS_PENDING, 0)
             resolver.update(uri, values, null, null)
 
-            File(
+            // MediaStore может сохранить файл под именем с суффиксом «(1)» при конфликте,
+            // поэтому возвращаем путь, который реально будет существовать.
+            val expectedFile = File(
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
                 source.name
             )
+            if (expectedFile.exists()) expectedFile else null
         } catch (e: Exception) {
             null
         }
