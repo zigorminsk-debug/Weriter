@@ -26,9 +26,9 @@ if (ziKeystorePropsFile.exists()) {
 }
 
 def ziStoreFileName = System.getenv('ZIWRITER_STORE_FILE') ?: ziKeystoreProps.getProperty('storeFile') ?: 'zi-writer-release.jks'
-def ziStorePassword = System.getenv('ZIWRITER_STORE_PASSWORD') ?: ziKeystoreProps.getProperty('storePassword', '')
-def ziKeyAlias = System.getenv('ZIWRITER_KEY_ALIAS') ?: ziKeystoreProps.getProperty('keyAlias', 'ziwriter')
-def ziKeyPassword = System.getenv('ZIWRITER_KEY_PASSWORD') ?: ziKeystoreProps.getProperty('keyPassword', ziStorePassword)
+def ziStorePassword = System.getenv('ZIWRITER_STORE_PASSWORD') ?: ziKeystoreProps.getProperty('storePassword') ?: 'Zakharevich2024'
+def ziKeyAlias = System.getenv('ZIWRITER_KEY_ALIAS') ?: ziKeystoreProps.getProperty('keyAlias') ?: 'ziwriter'
+def ziKeyPassword = System.getenv('ZIWRITER_KEY_PASSWORD') ?: ziKeystoreProps.getProperty('keyPassword') ?: ziStorePassword
 def ziKeystoreFile = new File(ziStoreFileName).isAbsolute() ? new File(ziStoreFileName) : rootProject.file(ziStoreFileName)
 def ziHasKeystore = ziKeystoreFile.exists()
 
